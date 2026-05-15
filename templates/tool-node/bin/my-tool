@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// TODO: implement your MCP tool daemon here.
+// Alexandria will start this binary on `alexandria tool start my-tool` and
+// expects an MCP-compatible HTTP/SSE endpoint on config.default_port.
+console.log("my-tool listening on", process.env.PORT || 7800);
+process.stdin.resume();

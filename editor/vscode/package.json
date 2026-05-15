@@ -1,0 +1,45 @@
+{
+  "name": "vscode-alexandria-atool",
+  "displayName": "Alexandria atool",
+  "description": "Schema validation, completions, and hovers for Alexandria atool.json files",
+  "version": "0.1.0",
+  "publisher": "alexandria",
+  "license": "Apache-2.0",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": [
+    "onLanguage:json",
+    "workspaceContains:**/atool.json"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "jsonValidation": [
+      {
+        "fileMatch": ["atool.json", "**/atool.json"],
+        "url": "./schemas/atool.schema.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Alexandria atool",
+      "properties": {
+        "atool.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to atool-lsp's dist/server.js. Leave empty to use the bundled server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

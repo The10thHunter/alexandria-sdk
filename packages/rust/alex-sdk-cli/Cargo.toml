@@ -1,0 +1,17 @@
+[package]
+name = "alex-sdk-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for the Alexandria SDK (`alex-sdk` binary)."
+
+[[bin]]
+name = "alex-sdk"
+path = "src/main.rs"
+
+[dependencies]
+alex-sdk = { path = "../alex-sdk" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }

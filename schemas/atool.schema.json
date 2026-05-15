@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/The10thHunter/alexandria-sdk/main/schemas/atool.schema.json",
+  "title": "Alexandria atool manifest",
+  "description": "Manifest for .atool and .aagent packages. Source of truth across all SDKs and the LSP.",
+  "type": "object",
+  "required": ["schema_version", "name", "version", "kind", "description", "config"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "2" },
+    "name": {
+      "type": "string",
+      "pattern": "^([a-z0-9][a-z0-9_-]*/)?[a-z0-9][a-z0-9_-]*$",
+      "description": "'vendor/name' or 'name'."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+].+)?$",
+      "description": "SemVer."
+    },
+    "kind": {
+      "enum": ["tool", "skill", "agent"]
+    },
+    "description": { "type": "string", "minLength": 1 },
+    "author": { "type": "string" },
+    "license": { "type": "string" },
+    "requires_alexandria": { "type": "string" },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "version"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/file" }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provides_tools": { "type": "array", "items": { "type": "string" } },
+        "needs_tools": { "type": "array", "items": { "type": "string" } },
+        "suggested_role": { "type": "string" }
+      }
+    },
+    "config": {
+      "oneOf": [
+        { "$ref": "#/$defs/toolConfig" },
+        { "$ref": "#/$defs/agentConfig" },
+        { "$ref": "#/$defs/skillConfig" }
+      ]
+    },
+    "components": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/componentItem" }
+    },
+    "install": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "flatten": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "system_prompt": { "enum": ["concat", "root_wins", "error_on_conflict"] },
+            "allowed_tools": { "enum": ["union", "root_wins"] },
+            "llm": { "const": "root_wins" },
+            "history_limit": { "const": "root_wins" }
+          }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["alg", "key_fingerprint", "value", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "alg": { "type": "string" },
+        "key_fingerprint": { "type": "string" },
+        "value": { "type": "string" },
+        "scope": { "enum": ["bundle", "per_component"] }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "tool" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "config": { "$ref": "#/$defs/toolConfig" } },
+        "not": { "required": ["components"] }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "skill" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "config": { "$ref": "#/$defs/skillConfig" } },
+        "not": { "required": ["components"] }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "agent" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "config": { "$ref": "#/$defs/agentConfig" } }
+      }
+    }
+  ],
+  "$defs": {
+    "file": {
+      "type": "object",
+      "required": ["archive_path", "install_path"],
+      "additionalProperties": false,
+      "properties": {
+        "archive_path": { "type": "string", "minLength": 1 },
+        "install_path": { "type": "string", "minLength": 1 },
+        "executable": { "type": "boolean", "default": false },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{0,64}$" }
+      }
+    },
+    "k8sResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "string" },
+            "memory": { "type": "string" }
+          }
+        }
+      }
+    },
+    "toolConfig": {
+      "type": "object",
+      "required": ["kind", "binary"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "tool" },
+        "binary": { "type": "string", "minLength": 1 },
+        "default_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "transport": { "enum": ["http", "sse"] },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "k8s_image": { "type": "string" },
+        "k8s_capabilities": { "type": "array", "items": { "type": "string" } },
+        "k8s_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "k8s_transport": { "enum": ["grpc", "http", "sse"] },
+        "k8s_resources": { "$ref": "#/$defs/k8sResources" },
+        "k8s_min_warm": { "type": "integer", "minimum": 0 },
+        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "agentConfig": {
+      "type": "object",
+      "required": ["kind", "system_prompt"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "agent" },
+        "system_prompt": { "type": "string", "minLength": 1 },
+        "allowed_tools": { "type": "array", "items": { "type": "string" } },
+        "llm": { "type": "string" },
+        "history_limit": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "skillConfig": {
+      "type": "object",
+      "required": ["kind", "system_prompt"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "skill" },
+        "system_prompt": { "type": "string", "minLength": 1 },
+        "allowed_tools": { "type": "array", "items": { "type": "string" } },
+        "llm": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "componentItem": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["ref"],
+          "additionalProperties": false,
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["name", "id", "kind", "config"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "id": {
+              "type": "string",
+              "pattern": "^([a-z0-9][a-z0-9_-]*/)?[a-z0-9][a-z0-9_-]*@\\d+\\.\\d+\\.\\d+",
+              "description": "Canonical ns/name@version used for coalescing."
+            },
+            "kind": { "enum": ["agent", "skill"] },
+            "config": {
+              "oneOf": [
+                { "$ref": "#/$defs/agentConfig" },
+                { "$ref": "#/$defs/skillConfig" }
+              ]
+            },
+            "components": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/componentItem" }
+            },
+            "files": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/file" }
+            },
+            "permissions": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "provides_tools": { "type": "array", "items": { "type": "string" } },
+                "needs_tools": { "type": "array", "items": { "type": "string" } },
+                "suggested_role": { "type": "string" }
+              }
+            },
+            "dependencies": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["name", "version"],
+                "additionalProperties": false,
+                "properties": {
+                  "name": { "type": "string" },
+                  "version": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

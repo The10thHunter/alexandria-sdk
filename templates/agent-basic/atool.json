@@ -1,0 +1,20 @@
+{
+  "schema_version": "2",
+  "name": "acme/my-agent",
+  "version": "0.1.0",
+  "kind": "agent",
+  "description": "TODO: describe what this agent does",
+  "author": "TODO",
+  "license": "Apache-2.0",
+  "config": {
+    "kind": "agent",
+    "system_prompt": "You are a helpful assistant. TODO: write your prompt.",
+    "allowed_tools": [],
+    "llm": "claude-opus-4-7",
+    "history_limit": 50
+  },
+  "permissions": {
+    "needs_tools": [],
+    "suggested_role": "worker"
+  }
+}

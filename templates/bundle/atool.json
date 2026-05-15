@@ -1,0 +1,18 @@
+{
+  "schema_version": "2",
+  "name": "acme/my-bundle",
+  "version": "0.1.0",
+  "kind": "agent",
+  "description": "TODO: describe what this agent ships — converted from v1 bundle",
+  "author": "TODO",
+  "license": "Apache-2.0",
+  "config": {
+    "kind": "agent",
+    "system_prompt": "TODO: add system_prompt before publishing.",
+    "allowed_tools": []
+  },
+  "components": [
+    { "ref": "acme/some-tool@0.1.0" },
+    { "ref": "acme/some-agent@0.1.0" }
+  ]
+}

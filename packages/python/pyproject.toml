@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "alexandria-sdk"
+version = "0.1.0"
+description = "Author .atool and .aagent packages for the Alexandria EE runtime."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors = [{ name = "Alexandria" }]
+keywords = ["alexandria", "atool", "aagent", "agent", "sdk"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "jsonschema>=4.21",
+]
+
+[project.scripts]
+alex-sdk = "alexandria_sdk.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["alexandria_sdk"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../schemas/atool.schema.json" = "alexandria_sdk/atool.schema.json"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "alexandria_sdk",
+  "README.md",
+  "pyproject.toml",
+]

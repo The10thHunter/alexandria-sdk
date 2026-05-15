@@ -1,0 +1,22 @@
+[package]
+name = "alex-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Standalone SDK for authoring Alexandria .atool / .aagent packages."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+jsonschema = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

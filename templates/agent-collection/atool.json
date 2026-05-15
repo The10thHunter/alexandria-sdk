@@ -1,0 +1,24 @@
+{
+  "schema_version": "2",
+  "name": "acme/my-agents",
+  "version": "0.1.0",
+  "kind": "agent",
+  "description": "A collection of agents shipped together",
+  "author": "TODO",
+  "license": "Apache-2.0",
+  "config": {
+    "kind": "agent",
+    "system_prompt": "You are an orchestrator that delegates to sub-agents. TODO: refine your prompt.",
+    "allowed_tools": []
+  },
+  "components": [
+    { "ref": "acme/research-agent@0.1.0" },
+    { "ref": "acme/writer-agent@0.1.0" }
+  ],
+  "install": {
+    "flatten": {
+      "system_prompt": "root_wins",
+      "allowed_tools": "union"
+    }
+  }
+}

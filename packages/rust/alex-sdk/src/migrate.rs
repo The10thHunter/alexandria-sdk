@@ -1,7 +1,12 @@
-//! Migration from v1 to v2 atool manifests.
+//! Migration from v1 to EE-canonical v2 atool manifests.
 //!
 //! `migrate_manifest` takes a parsed v1 JSON value and returns a v2 JSON value
 //! plus lists of warnings and errors. Callers write the result to `atool.json`.
+//!
+//! Kind remap:  tool -> mcp|atool (by transport: grpc=>atool, else mcp);
+//!              skill -> aagent;  agent -> aagent;  bundle -> aagent.
+//! Field remap: model stays model (EE uses `model`); llm/model_hint -> model;
+//!              aagent tags dropped (no such field in EE AagentConfig).
 
 use serde_json::{Map, Value};
 
@@ -17,9 +22,6 @@ pub struct MigrateResult {
 }
 
 /// Migrate a v1 manifest JSON value to v2.
-///
-/// The input is consumed and transformed in-place where possible. Returns a
-/// [`MigrateResult`] whose `manifest` field is the upgraded value.
 pub fn migrate_manifest(mut v1: Value) -> MigrateResult {
     let mut warnings: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
@@ -28,7 +30,11 @@ pub fn migrate_manifest(mut v1: Value) -> MigrateResult {
         Some(o) => o,
         None => {
             errors.push("manifest is not a JSON object".to_string());
-            return MigrateResult { manifest: v1, warnings, errors };
+            return MigrateResult {
+                manifest: v1,
+                warnings,
+                errors,
+            };
         }
     };
 
@@ -44,7 +50,8 @@ pub fn migrate_manifest(mut v1: Value) -> MigrateResult {
     // Handle removed kinds
     if kind == "llm-runtime" || kind == "llm-backend" {
         errors.push(format!(
-            "kind '{}' has no v2 equivalent; register via `alexandria llm install` instead",
+            "kind '{}' has no v2 equivalent; register a model via \
+             `alexandria install <name> --model` (.amodel) instead",
             kind
         ));
         return MigrateResult {
@@ -55,11 +62,14 @@ pub fn migrate_manifest(mut v1: Value) -> MigrateResult {
     }
 
     if kind == "bundle" {
-        obj.insert("kind".to_string(), Value::String("agent".to_string()));
-        warnings.push("bundle converted to agent; add config.system_prompt before publishing".to_string());
+        // A bundle collapses to an aagent orchestrator carrying components[] refs.
+        obj.insert("kind".to_string(), Value::String("aagent".to_string()));
+        warnings.push(
+            "bundle converted to aagent; add config.system_prompt before publishing".to_string(),
+        );
 
-        // Convert bundleConfig.components -> top-level components[]
-        let old_comps: Vec<Value> = if let Some(cfg) = obj.get("config").and_then(|c| c.as_object()) {
+        let old_comps: Vec<Value> = if let Some(cfg) = obj.get("config").and_then(|c| c.as_object())
+        {
             cfg.get("components")
                 .and_then(|c| c.as_array())
                 .cloned()
@@ -77,38 +87,70 @@ pub fn migrate_manifest(mut v1: Value) -> MigrateResult {
             .collect();
         obj.insert("components".to_string(), Value::Array(new_comps));
 
-        // Replace bundle config with minimal agent config
         let mut new_cfg = Map::new();
-        new_cfg.insert("kind".to_string(), Value::String("agent".to_string()));
+        new_cfg.insert("kind".to_string(), Value::String("aagent".to_string()));
         new_cfg.insert(
             "system_prompt".to_string(),
             Value::String("TODO: add system_prompt".to_string()),
         );
         obj.insert("config".to_string(), Value::Object(new_cfg));
+    } else if kind == "tool" {
+        // A v1 tool becomes mcp (MCP JSON-RPC/SSE) or atool (native gRPC),
+        // discriminated by transport. Default (no transport) is MCP over http.
+        let transport = obj
+            .get("config")
+            .and_then(|c| c.as_object())
+            .and_then(|c| c.get("transport"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let new_kind = if transport == "grpc" { "atool" } else { "mcp" };
+        obj.insert("kind".to_string(), Value::String(new_kind.to_string()));
+        if let Some(cfg) = obj.get_mut("config").and_then(|c| c.as_object_mut()) {
+            cfg.insert("kind".to_string(), Value::String(new_kind.to_string()));
+        }
+        if new_kind == "atool" {
+            warnings.push(
+                "kind 'tool' with transport=grpc migrated to kind 'atool' (native ToolService)"
+                    .to_string(),
+            );
+        } else {
+            warnings.push("kind 'tool' migrated to kind 'mcp' (MCP JSON-RPC/SSE)".to_string());
+        }
+    } else if kind == "skill" {
+        // EE has no standalone skill kind — a skill is reusable prompt text that
+        // ships as an aagent whose content is its system_prompt.
+        obj.insert("kind".to_string(), Value::String("aagent".to_string()));
+        if let Some(cfg) = obj.get_mut("config").and_then(|c| c.as_object_mut()) {
+            cfg.insert("kind".to_string(), Value::String("aagent".to_string()));
+        }
+        warnings.push(
+            "kind 'skill' migrated to kind 'aagent' (skills live in aagent.system_prompt)"
+                .to_string(),
+        );
+    } else if kind == "agent" {
+        obj.insert("kind".to_string(), Value::String("aagent".to_string()));
+        if let Some(cfg) = obj.get_mut("config").and_then(|c| c.as_object_mut()) {
+            cfg.insert("kind".to_string(), Value::String("aagent".to_string()));
+        }
     }
 
-    // Migrate config fields
+    // Migrate config fields to EE serde names.
     if let Some(cfg) = obj.get_mut("config").and_then(|c| c.as_object_mut()) {
-        if let Some(model) = cfg.remove("model") {
-            cfg.insert("llm".to_string(), model);
-            warnings.push("config.model renamed to config.llm".to_string());
+        // EE uses `model`; the intermediate SDK-v2 field `llm` folds back to it.
+        if let Some(llm) = cfg.remove("llm") {
+            cfg.insert("model".to_string(), llm);
+            warnings.push("config.llm renamed to config.model".to_string());
         }
         if let Some(model_hint) = cfg.remove("model_hint") {
-            cfg.insert("llm".to_string(), model_hint);
-            warnings.push("config.model_hint renamed to config.llm".to_string());
+            cfg.insert("model".to_string(), model_hint);
+            warnings.push("config.model_hint renamed to config.model".to_string());
         }
         if cfg.remove("default_mode").is_some() {
             warnings.push("config.default_mode removed (swarm is always default)".to_string());
         }
-        // Warn about default_port: 0
-        if let Some(dp) = cfg.get("default_port") {
-            let is_zero = dp.as_u64().map(|v| v == 0).unwrap_or(false)
-                || dp.as_f64().map(|v| v == 0.0).unwrap_or(false);
-            if is_zero {
-                warnings.push(
-                    "default_port was 0 (schema-invalid); set to a valid port 1-65535".to_string(),
-                );
-            }
+        if cfg.remove("tags").is_some() {
+            warnings.push("config.tags removed (EE aagent has no tags field)".to_string());
         }
     }
 

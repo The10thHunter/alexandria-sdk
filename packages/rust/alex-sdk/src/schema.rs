@@ -19,8 +19,8 @@ fn compiled() -> &'static JSONSchema {
         // SAFETY: schema is bundled and known good at build time. We panic
         // here rather than threading a Result through every call site —
         // a broken schema is an unrecoverable build-time bug.
-        let value: Value = serde_json::from_str(SCHEMA_JSON)
-            .expect("bundled atool.schema.json is valid JSON");
+        let value: Value =
+            serde_json::from_str(SCHEMA_JSON).expect("bundled atool.schema.json is valid JSON");
         JSONSchema::options()
             .with_draft(Draft::Draft202012)
             .compile(&value)

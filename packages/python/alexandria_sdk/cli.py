@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
 from .pack import inspect, pack, verify
+from .publish import publish
 
 HELP = """alex-sdk — author .atool / .aagent packages
 
@@ -18,6 +20,9 @@ USAGE
   alex-sdk verify <pkg>              Re-hash files, validate manifest
   alex-sdk inspect <pkg>             Print manifest + file list
   alex-sdk migrate <src> [-o out]    Upgrade v1 atool.json to v2
+  alex-sdk publish <pkg>             Publish a packed archive to a registry
+                                     [--registry <url>] [--token <t>] [--artifact-type <t>]
+                                     (env: ALEX_REGISTRY_URL, ALEX_REGISTRY_TOKEN)
 
 TEMPLATES
   tool-node, tool-python, agent-basic, agent-collection
@@ -27,7 +32,17 @@ EXAMPLES
   alex-sdk pack ./my-agent -o my-agent-0.1.0.aagent
   alex-sdk verify my-agent-0.1.0.aagent
   alex-sdk migrate old-atool.json -o atool.json
+  alex-sdk publish my-agent-0.1.0.aagent --registry https://reg.example
 """
+
+
+def _flag_val(args: list[str], name: str) -> str | None:
+    """Return the value following ``name`` in ``args``, or None."""
+    if name in args:
+        i = args.index(name)
+        if i + 1 < len(args):
+            return args[i + 1]
+    return None
 
 
 def _die(msg: str, code: int = 1) -> None:
@@ -50,12 +65,20 @@ def _templates_root() -> Path:
 def _default_out_path(src_dir: Path, manifest_kind: str) -> str:
     m = json.loads((src_dir / "atool.json").read_text(encoding="utf-8"))
     short = str(m["name"]).split("/")[-1]
-    ext = "aagent" if manifest_kind == "agent" else "atool"
+    ext = "aagent" if manifest_kind == "aagent" else "atool"
     return f"{short}-{m['version']}.{ext}"
 
 
 def _migrate_manifest(v1: dict[str, Any]) -> tuple[dict[str, Any], list[str], list[str]]:
-    """Migrate a v1 manifest dict to v2. Returns (manifest, warnings, errors)."""
+    """Migrate a v1 manifest dict to the EE-canonical v2 taxonomy.
+
+    Returns (manifest, warnings, errors).
+
+    Kind remap:  tool -> mcp|atool (by transport: grpc=>atool, else mcp);
+                 skill -> aagent;  agent -> aagent;  bundle -> aagent.
+    Field remap: model stays model (EE uses ``model``); llm/model_hint -> model;
+                 aagent tags dropped (no such field in EE AagentConfig).
+    """
     warnings: list[str] = []
     errors: list[str] = []
     m: dict[str, Any] = dict(v1)
@@ -67,35 +90,65 @@ def _migrate_manifest(v1: dict[str, Any]) -> tuple[dict[str, Any], list[str], li
     kind = m.get("kind", "")
     if kind in ("llm-runtime", "llm-backend"):
         errors.append(
-            f"kind '{kind}' has no v2 equivalent; register via `alexandria llm install` instead"
+            f"kind '{kind}' has no v2 equivalent; register a model via "
+            f"`alexandria install <name> --model` (.amodel) instead"
         )
         return m, warnings, errors
 
     if kind == "bundle":
-        m["kind"] = "agent"
-        warnings.append("bundle converted to agent; add config.system_prompt before publishing")
-        cfg = dict(m.get("config") or {})
-        old_components = cfg.get("components", [])
+        # A bundle collapses to an aagent orchestrator carrying components[] refs.
+        m["kind"] = "aagent"
+        warnings.append("bundle converted to aagent; add config.system_prompt before publishing")
+        bcfg = dict(m.get("config") or {})
+        old_components = bcfg.get("components", [])
         if isinstance(old_components, list):
             m["components"] = [{"ref": ref} for ref in old_components]
         m["config"] = {
-            "kind": "agent",
+            "kind": "aagent",
             "system_prompt": "TODO: add system_prompt",
         }
-        cfg = m["config"]
-    else:
+    elif kind == "tool":
+        # A v1 tool becomes mcp (MCP JSON-RPC/SSE) or atool (native gRPC),
+        # discriminated by transport. Default (no transport) is MCP over http.
         cfg = dict(m.get("config") or {})
+        new_kind = "atool" if cfg.get("transport") == "grpc" else "mcp"
+        m["kind"] = new_kind
+        cfg["kind"] = new_kind
+        m["config"] = cfg
+        if new_kind == "atool":
+            warnings.append("kind 'tool' with transport=grpc migrated to kind 'atool' (native ToolService)")
+        else:
+            warnings.append("kind 'tool' migrated to kind 'mcp' (MCP JSON-RPC/SSE)")
+    elif kind == "skill":
+        # EE has no standalone skill kind — a skill is reusable prompt text that
+        # ships as an aagent whose content is its system_prompt.
+        m["kind"] = "aagent"
+        cfg = dict(m.get("config") or {})
+        cfg["kind"] = "aagent"
+        m["config"] = cfg
+        warnings.append("kind 'skill' migrated to kind 'aagent' (skills live in aagent.system_prompt)")
+    elif kind == "agent":
+        cfg = dict(m.get("config") or {})
+        cfg["kind"] = "aagent"
+        m["config"] = cfg
+        m["kind"] = "aagent"
 
-    # Migrate config fields
-    if "model" in cfg:
-        cfg["llm"] = cfg.pop("model")
-        warnings.append("config.model renamed to config.llm")
+    # Migrate config fields to EE serde names.
+    cfg = dict(m.get("config") or {})
+    # EE uses ``model``; the intermediate SDK-v2 field ``llm`` folds back to it.
+    if "llm" in cfg:
+        cfg["model"] = cfg.pop("llm")
+        warnings.append("config.llm renamed to config.model")
     if "model_hint" in cfg:
-        cfg["llm"] = cfg.pop("model_hint")
-        warnings.append("config.model_hint renamed to config.llm")
+        cfg["model"] = cfg.pop("model_hint")
+        warnings.append("config.model_hint renamed to config.model")
     if "default_mode" in cfg:
         del cfg["default_mode"]
         warnings.append("config.default_mode removed (swarm is always default)")
+    # EE AagentConfig has no ``tags`` field.
+    if "tags" in cfg:
+        del cfg["tags"]
+        warnings.append("config.tags removed (EE aagent has no tags field)")
     m["config"] = cfg
 
     # Strip old signing fields at wrong locations
@@ -121,10 +174,6 @@ def _migrate_manifest(v1: dict[str, Any]) -> tuple[dict[str, Any], list[str], li
         warnings.append(
             f"signing fields removed ({', '.join(stripped_signing)}); re-sign after migration"
         )
-
-    # Warn about default_port: 0
-    if cfg.get("default_port") == 0:
-        warnings.append("default_port was 0 (schema-invalid); set to a valid port 1-65535")
 
     # Warn about dependencies missing version
     for dep in m.get("dependencies") or []:
@@ -243,6 +292,26 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.write(f"  WARN: {w}\n")
 
         sys.stdout.write(f"Migrated to v2 -> {dest}\n")
+        return 0
+
+    if cmd == "publish":
+        if not rest or rest[0].startswith("--"):
+            _die("usage: alex-sdk publish <pkg> [--registry <url>] [--token <t>] [--artifact-type <t>]")
+        pkg = rest[0]
+        registry = _flag_val(rest, "--registry") or os.environ.get("ALEX_REGISTRY_URL")
+        if not registry:
+            _die("no registry: pass --registry <url> or set ALEX_REGISTRY_URL")
+            return 1
+        token = _flag_val(rest, "--token") or os.environ.get("ALEX_REGISTRY_TOKEN")
+        artifact_type = _flag_val(rest, "--artifact-type")
+        r = publish(pkg, registry, token=token, artifact_type=artifact_type)
+        if not r.ok:
+            body = r.body if isinstance(r.body, str) else json.dumps(r.body)
+            _die(f"publish failed ({r.status}): {body}")
+            return 1
+        sys.stdout.write(
+            f"Published {r.name}@{r.version} ({r.artifact_type}) -> {registry} [{r.status}]\n"
+        )
         return 0
 
     _die(f"unknown command '{cmd}'\n\n{HELP}")

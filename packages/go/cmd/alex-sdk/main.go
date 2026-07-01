@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	alexsdk "github.com/The10thHunter/alexandria-sdk/packages/go"
 )
@@ -20,6 +21,9 @@ USAGE
   alex-sdk verify <pkg>              Re-hash files, validate manifest
   alex-sdk inspect <pkg>             Print manifest + file list
   alex-sdk migrate <src> [-o out]    Upgrade v1 atool.json to v2
+  alex-sdk publish <pkg>             Publish a packed archive to a registry
+                                     [--registry <url>] [--token <t>] [--artifact-type <t>]
+                                     (env: ALEX_REGISTRY_URL, ALEX_REGISTRY_TOKEN)
 
 TEMPLATES
   tool-node, tool-python, agent-basic, agent-collection
@@ -29,6 +33,7 @@ EXAMPLES
   alex-sdk pack ./my-agent -o my-agent-0.1.0.aagent
   alex-sdk verify my-agent-0.1.0.aagent
   alex-sdk migrate old-atool.json -o atool.json
+  alex-sdk publish my-agent-0.1.0.aagent --registry https://reg.example
 `
 
 func die(msg string, code int) {
@@ -56,6 +61,8 @@ func main() {
 		cmdInspect(rest)
 	case "migrate":
 		cmdMigrate(rest)
+	case "publish":
+		cmdPublish(rest)
 	default:
 		die(fmt.Sprintf("unknown command '%s'\n\n%s", cmd, help), 1)
 	}
@@ -208,13 +215,54 @@ func cmdMigrate(args []string) {
 	fmt.Printf("Migrated to v2 -> %s\n", dest)
 }
 
+func cmdPublish(args []string) {
+	if len(args) < 1 || strings.HasPrefix(args[0], "--") {
+		die("usage: alex-sdk publish <pkg> [--registry <url>] [--token <t>] [--artifact-type <t>]", 1)
+	}
+	pkg := args[0]
+	registry := flagVal(args, "--registry")
+	if registry == "" {
+		registry = os.Getenv("ALEX_REGISTRY_URL")
+	}
+	if registry == "" {
+		die("no registry: pass --registry <url> or set ALEX_REGISTRY_URL", 1)
+	}
+	token := flagVal(args, "--token")
+	if token == "" {
+		token = os.Getenv("ALEX_REGISTRY_TOKEN")
+	}
+	artifactType := flagVal(args, "--artifact-type")
+
+	r, err := alexsdk.Publish(pkg, registry, alexsdk.PublishOptions{
+		Token:        token,
+		ArtifactType: artifactType,
+	})
+	if err != nil {
+		die(err.Error(), 1)
+	}
+	if !r.OK {
+		die(fmt.Sprintf("publish failed (%d): %s", r.Status, r.Body), 1)
+	}
+	fmt.Printf("Published %s@%s (%s) -> %s [%d]\n", r.Name, r.Version, r.ArtifactType, registry, r.Status)
+}
+
+// flagVal returns the value following name in args, or "".
+func flagVal(args []string, name string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == name {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
 func defaultOutPath(m *alexsdk.Manifest) string {
 	short := m.Name
 	if i := lastSlash(short); i >= 0 {
 		short = short[i+1:]
 	}
 	ext := "atool"
-	if m.Kind == alexsdk.KindAgent {
+	if m.Kind == alexsdk.KindAagent {
 		ext = "aagent"
 	}
 	return fmt.Sprintf("%s-%s.%s", short, m.Version, ext)

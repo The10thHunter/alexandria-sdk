@@ -12,22 +12,25 @@
 //! - Pack/verify/inspect in [`pack`]
 //! - Fluent builders ([`Tool`], [`Agent`], [`Skill`]) in [`builders`]
 //! - Manifest migration from v1 to v2 via [`migrate`]
+//! - Registry publish in [`publish`]
 
 pub mod builders;
 pub mod manifest;
 pub mod migrate;
 pub mod pack;
+pub mod publish;
 pub mod schema;
 
 pub use builders::{Agent, Skill, Tool};
 pub use manifest::{
-    AgentConfig, ComponentItem, Dependency, FileEntry, InlineComponent, InlineComponentKind,
-    InlineConfig, InstallBlock, InstallFlatten, K8sResources, K8sResourceSpec, Kind, Manifest,
-    PackageConfig, Permissions, RefComponent, SignatureBlock, SkillConfig, ToolConfig,
-    ToolK8sTransport, ToolTransport,
+    AagentConfig, AtoolConfig, ComponentItem, Dependency, FileEntry, InlineComponent,
+    InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten, K8sHints, K8sResourceSpec,
+    K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport, PackageConfig, PackageDep,
+    Permissions, PromptMode, RefComponent, SignatureBlock, ToolK8sTransport, WireTransport,
 };
 pub use migrate::{migrate_manifest, MigrateResult};
 pub use pack::{inspect, pack, verify, InspectResult, InspectedFile};
+pub use publish::{publish, publish_with, PublishOptions, PublishResult, Transport, UreqTransport};
 pub use schema::{assert_valid, validate, ValidationError};
 
 use thiserror::Error;

@@ -5,6 +5,7 @@ Mirrors the TypeScript SDK surface (`@alexandria/sdk`).
 
 from .builders import Agent, Skill, Tool
 from .pack import inspect, pack, verify
+from .publish import PublishResult, publish
 from .schema import assert_valid, validate
 
 __all__ = [
@@ -14,6 +15,8 @@ __all__ = [
     "pack",
     "verify",
     "inspect",
+    "publish",
+    "PublishResult",
     "validate",
     "assert_valid",
 ]

@@ -1,8 +1,16 @@
 package alexsdk
 
-// MigrateManifest upgrades a v1 manifest map to v2.
+// MigrateManifest upgrades a v1 manifest map to the EE-canonical v2 taxonomy.
 // Returns (manifest, warnings, errors). If errors is non-empty, migration
 // cannot proceed (un-migratable kind). Warnings are non-fatal issues.
+//
+// Kind remap:  tool -> mcp|atool (by transport: grpc=>atool, else mcp);
+//
+//	skill -> aagent;  agent -> aagent;  bundle -> aagent.
+//
+// Field remap: model stays model (EE uses `model`); llm/model_hint -> model;
+//
+//	aagent tags dropped (no such field in EE AagentConfig).
 //
 // Callers should write the returned manifest to atool.json after migration.
 func MigrateManifest(v1 map[string]interface{}) (manifest map[string]interface{}, warnings []string, errors []string) {
@@ -16,16 +24,17 @@ func MigrateManifest(v1 map[string]interface{}) (manifest map[string]interface{}
 	// Handle removed kinds
 	if kind == "llm-runtime" || kind == "llm-backend" {
 		errors = append(errors,
-			"kind '"+kind+"' has no v2 equivalent; register via `alexandria llm install` instead",
+			"kind '"+kind+"' has no v2 equivalent; register a model via "+
+				"`alexandria install <name> --model` (.amodel) instead",
 		)
 		return m, warnings, errors
 	}
 
-	if kind == "bundle" {
-		m["kind"] = "agent"
-		warnings = append(warnings, "bundle converted to agent; add config.system_prompt before publishing")
-
-		// Convert bundleConfig.components -> top-level components[]
+	switch kind {
+	case "bundle":
+		// A bundle collapses to an aagent orchestrator carrying components[] refs.
+		m["kind"] = "aagent"
+		warnings = append(warnings, "bundle converted to aagent; add config.system_prompt before publishing")
 		if cfg, ok := m["config"].(map[string]interface{}); ok {
 			if oldComponents, ok := cfg["components"].([]interface{}); ok {
 				newComps := make([]interface{}, 0, len(oldComponents))
@@ -35,41 +44,69 @@ func MigrateManifest(v1 map[string]interface{}) (manifest map[string]interface{}
 				m["components"] = newComps
 			}
 		}
-		// Replace bundle config with minimal agent config
 		m["config"] = map[string]interface{}{
-			"kind":          "agent",
+			"kind":          "aagent",
 			"system_prompt": "TODO: add system_prompt",
+		}
+	case "tool":
+		// A v1 tool becomes mcp (MCP JSON-RPC/SSE) or atool (native gRPC),
+		// discriminated by transport. Default (no transport) is MCP over http.
+		cfg, _ := m["config"].(map[string]interface{})
+		transport := ""
+		if cfg != nil {
+			transport, _ = cfg["transport"].(string)
+		}
+		newKind := "mcp"
+		if transport == "grpc" {
+			newKind = "atool"
+		}
+		m["kind"] = newKind
+		if cfg != nil {
+			cfg["kind"] = newKind
+			m["config"] = cfg
+		}
+		if newKind == "atool" {
+			warnings = append(warnings, "kind 'tool' with transport=grpc migrated to kind 'atool' (native ToolService)")
+		} else {
+			warnings = append(warnings, "kind 'tool' migrated to kind 'mcp' (MCP JSON-RPC/SSE)")
+		}
+	case "skill":
+		// EE has no standalone skill kind — a skill is reusable prompt text that
+		// ships as an aagent whose content is its system_prompt.
+		m["kind"] = "aagent"
+		if cfg, ok := m["config"].(map[string]interface{}); ok {
+			cfg["kind"] = "aagent"
+			m["config"] = cfg
+		}
+		warnings = append(warnings, "kind 'skill' migrated to kind 'aagent' (skills live in aagent.system_prompt)")
+	case "agent":
+		m["kind"] = "aagent"
+		if cfg, ok := m["config"].(map[string]interface{}); ok {
+			cfg["kind"] = "aagent"
+			m["config"] = cfg
 		}
 	}
 
-	// Migrate config fields
+	// Migrate config fields to EE serde names.
 	if cfg, ok := m["config"].(map[string]interface{}); ok {
-		if model, ok := cfg["model"]; ok {
-			cfg["llm"] = model
-			delete(cfg, "model")
-			warnings = append(warnings, "config.model renamed to config.llm")
+		// EE uses `model`; the intermediate SDK-v2 field `llm` folds back to it.
+		if llm, ok := cfg["llm"]; ok {
+			cfg["model"] = llm
+			delete(cfg, "llm")
+			warnings = append(warnings, "config.llm renamed to config.model")
 		}
 		if modelHint, ok := cfg["model_hint"]; ok {
-			cfg["llm"] = modelHint
+			cfg["model"] = modelHint
 			delete(cfg, "model_hint")
-			warnings = append(warnings, "config.model_hint renamed to config.llm")
+			warnings = append(warnings, "config.model_hint renamed to config.model")
 		}
 		if _, ok := cfg["default_mode"]; ok {
 			delete(cfg, "default_mode")
 			warnings = append(warnings, "config.default_mode removed (swarm is always default)")
 		}
-		// Warn about default_port: 0
-		if dp, ok := cfg["default_port"]; ok {
-			switch v := dp.(type) {
-			case float64:
-				if v == 0 {
-					warnings = append(warnings, "default_port was 0 (schema-invalid); set to a valid port 1-65535")
-				}
-			case int:
-				if v == 0 {
-					warnings = append(warnings, "default_port was 0 (schema-invalid); set to a valid port 1-65535")
-				}
-			}
+		if _, ok := cfg["tags"]; ok {
+			delete(cfg, "tags")
+			warnings = append(warnings, "config.tags removed (EE aagent has no tags field)")
 		}
 		m["config"] = cfg
 	}

@@ -13,8 +13,8 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use flate2::Compression;
 use sha2::{Digest, Sha256};
 
@@ -84,7 +84,11 @@ pub fn pack(src_dir: &Path, out_path: &Path) -> Result<Manifest> {
         for f in files {
             let abs = src_dir.join(&f.archive_path);
             let meta = std::fs::metadata(&abs)?;
-            let mode: u32 = if f.executable.unwrap_or(false) { 0o755 } else { 0o644 };
+            let mode: u32 = if f.executable.unwrap_or(false) {
+                0o755
+            } else {
+                0o644
+            };
             let mut header = tar::Header::new_gnu();
             header.set_path(&f.archive_path)?;
             header.set_size(meta.len());

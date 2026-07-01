@@ -10,14 +10,11 @@ use clap::{Parser, Subcommand};
 use alex_sdk::manifest::Kind;
 use alex_sdk::migrate::migrate_manifest;
 use alex_sdk::pack::read_manifest;
+use alex_sdk::publish::{publish, PublishOptions};
 use alex_sdk::{inspect, pack, verify};
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "alex-sdk",
-    about = "Author .atool / .aagent packages",
-    version
-)]
+#[command(name = "alex-sdk", about = "Author .atool / .aagent packages", version)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -52,6 +49,20 @@ enum Cmd {
         #[arg(short = 'o', long)]
         out: Option<PathBuf>,
     },
+    /// Publish a packed `.atool` / `.aagent` to a registry (`/v1/submit`).
+    Publish {
+        /// Path to the packed archive.
+        pkg: PathBuf,
+        /// Registry base URL. Falls back to $ALEX_REGISTRY_URL.
+        #[arg(long)]
+        registry: Option<String>,
+        /// Bearer token. Falls back to $ALEX_REGISTRY_TOKEN.
+        #[arg(long)]
+        token: Option<String>,
+        /// Override the artifact_type (defaults to the manifest kind).
+        #[arg(long = "artifact-type")]
+        artifact_type: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -62,6 +73,12 @@ fn main() -> Result<()> {
         Cmd::Verify { pkg } => cmd_verify(&pkg),
         Cmd::Inspect { pkg } => cmd_inspect(&pkg),
         Cmd::Migrate { src, out } => cmd_migrate(&src, out.as_deref()),
+        Cmd::Publish {
+            pkg,
+            registry,
+            token,
+            artifact_type,
+        } => cmd_publish(&pkg, registry, token, artifact_type),
     }
 }
 
@@ -150,7 +167,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 fn default_out_path(src_dir: &Path) -> Result<PathBuf> {
     let manifest = read_manifest(src_dir)
         .map_err(|e| anyhow!("reading {}/atool.json: {e}", src_dir.display()))?;
-    let ext = if matches!(manifest.kind, Kind::Agent) {
+    let ext = if matches!(manifest.kind, Kind::Aagent) {
         "aagent"
     } else {
         "atool"
@@ -219,8 +236,8 @@ fn cmd_migrate(src: &Path, out: Option<&Path>) -> Result<()> {
     let raw = std::fs::read_to_string(&resolved)
         .with_context(|| format!("reading {}", resolved.display()))?;
 
-    let v1: serde_json::Value =
-        serde_json::from_str(&raw).with_context(|| format!("parsing JSON in {}", resolved.display()))?;
+    let v1: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing JSON in {}", resolved.display()))?;
 
     let result = migrate_manifest(v1);
 
@@ -234,8 +251,7 @@ fn cmd_migrate(src: &Path, out: Option<&Path>) -> Result<()> {
 
     let json = serde_json::to_string_pretty(&result.manifest)? + "\n";
     let dest = out.unwrap_or(&resolved);
-    std::fs::write(dest, &json)
-        .with_context(|| format!("writing {}", dest.display()))?;
+    std::fs::write(dest, &json).with_context(|| format!("writing {}", dest.display()))?;
 
     if !result.warnings.is_empty() {
         eprintln!("Migration warnings:");
@@ -245,5 +261,31 @@ fn cmd_migrate(src: &Path, out: Option<&Path>) -> Result<()> {
     }
 
     println!("Migrated to v2 -> {}", dest.display());
+    Ok(())
+}
+
+fn cmd_publish(
+    pkg: &Path,
+    registry: Option<String>,
+    token: Option<String>,
+    artifact_type: Option<String>,
+) -> Result<()> {
+    let registry = registry
+        .or_else(|| std::env::var("ALEX_REGISTRY_URL").ok())
+        .ok_or_else(|| anyhow!("no registry: pass --registry <url> or set ALEX_REGISTRY_URL"))?;
+    let token = token.or_else(|| std::env::var("ALEX_REGISTRY_TOKEN").ok());
+
+    let opts = PublishOptions {
+        token,
+        artifact_type,
+    };
+    let r = publish(pkg, &registry, &opts).map_err(|e| anyhow!("publish failed: {e}"))?;
+    if !r.ok {
+        bail!("publish failed ({}): {}", r.status, r.body);
+    }
+    println!(
+        "Published {}@{} ({}) -> {} [{}]",
+        r.name, r.version, r.artifact_type, registry, r.status
+    );
     Ok(())
 }

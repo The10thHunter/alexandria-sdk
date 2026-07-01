@@ -20,7 +20,7 @@ func TestAgentBuildPackVerifyRoundTrip(t *testing.T) {
 		License("MIT").
 		SystemPrompt("You are a friendly demo agent.").
 		AllowedTools([]string{"acme/echo"}).
-		LLM("claude-opus-4")
+		Model("claude-opus-4")
 
 	m, err := a.Pack(out)
 	if err != nil {
@@ -37,22 +37,22 @@ func TestAgentBuildPackVerifyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if got.Kind != alexsdk.KindAgent {
-		t.Fatalf("expected kind=agent, got %q", got.Kind)
+	if got.Kind != alexsdk.KindAagent {
+		t.Fatalf("expected kind=aagent, got %q", got.Kind)
 	}
-	ac, err := got.AgentConfig()
+	ac, err := got.AagentConfig()
 	if err != nil {
-		t.Fatalf("AgentConfig: %v", err)
+		t.Fatalf("AagentConfig: %v", err)
 	}
 	if ac.SystemPrompt == "" {
 		t.Fatal("expected non-empty system_prompt")
 	}
-	if ac.LLM != "claude-opus-4" {
-		t.Fatalf("expected llm=claude-opus-4, got %q", ac.LLM)
+	if ac.Model != "claude-opus-4" {
+		t.Fatalf("expected model=claude-opus-4, got %q", ac.Model)
 	}
 }
 
-func TestToolStagedBinaryHasSHA256(t *testing.T) {
+func TestToolDefaultsToAtool(t *testing.T) {
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "echo-bin")
 	if err := os.WriteFile(binPath, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
@@ -63,8 +63,7 @@ func TestToolStagedBinaryHasSHA256(t *testing.T) {
 	tool := alexsdk.NewTool("acme/echo", "0.1.0").
 		Description("Tool with a staged binary").
 		Binary("bin/echo").
-		Port(8080).
-		Transport("http").
+		InterfaceMajor(2).
 		StageFile(binPath, alexsdk.FileEntry{
 			ArchivePath: "bin/echo",
 			InstallPath: "bin/echo",
@@ -75,6 +74,16 @@ func TestToolStagedBinaryHasSHA256(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
+	if m.Kind != alexsdk.KindAtool {
+		t.Fatalf("expected kind=atool, got %q", m.Kind)
+	}
+	ac, err := m.AtoolConfig()
+	if err != nil {
+		t.Fatalf("AtoolConfig: %v", err)
+	}
+	if ac.InterfaceMajor == nil || *ac.InterfaceMajor != 2 {
+		t.Fatalf("expected interface_major=2, got %v", ac.InterfaceMajor)
+	}
 	if len(m.Files) != 1 {
 		t.Fatalf("expected 1 file, got %d", len(m.Files))
 	}
@@ -84,6 +93,43 @@ func TestToolStagedBinaryHasSHA256(t *testing.T) {
 	}
 	if _, err := alexsdk.Verify(out); err != nil {
 		t.Fatalf("Verify: %v", err)
+	}
+}
+
+func TestToolTransportHTTPRetaxesToMcp(t *testing.T) {
+	tool := alexsdk.NewTool("acme/mcptool", "0.1.0").
+		Description("an mcp daemon").
+		Binary("bin/mcptool").
+		Port(7800).
+		Transport("http")
+
+	m, err := tool.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Kind != alexsdk.KindMcp {
+		t.Fatalf("expected kind=mcp, got %q", m.Kind)
+	}
+	mc, err := m.McpConfig()
+	if err != nil {
+		t.Fatalf("McpConfig: %v", err)
+	}
+	if mc.Transport != "http" {
+		t.Fatalf("expected transport=http, got %q", mc.Transport)
+	}
+}
+
+func TestToolTransportGrpcStaysAtool(t *testing.T) {
+	m, err := alexsdk.NewTool("acme/g", "0.1.0").
+		Description("grpc tool").
+		Binary("bin/g").
+		Transport("grpc").
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Kind != alexsdk.KindAtool {
+		t.Fatalf("expected kind=atool, got %q", m.Kind)
 	}
 }
 
@@ -114,8 +160,41 @@ func TestAgentWithInlineSubAgent(t *testing.T) {
 	if comp.ID != "acme/child@0.1.0" {
 		t.Fatalf("expected component id=acme/child@0.1.0, got %q", comp.ID)
 	}
+	if comp.Kind != "aagent" {
+		t.Fatalf("expected component kind=aagent, got %q", comp.Kind)
+	}
 	if _, err := alexsdk.Verify(out); err != nil {
 		t.Fatalf("Verify parent: %v", err)
+	}
+}
+
+func TestAgentExtendsAndLockfile(t *testing.T) {
+	dir := t.TempDir()
+
+	agent := alexsdk.NewAgent("acme/child", "0.1.0").
+		Description("child agent extending a base").
+		SystemPrompt("You extend a base agent.").
+		PromptMode("append").
+		Extend(alexsdk.PackageDep{Name: "acme/base-agent", Version: "1.0.0"}).
+		Lock(alexsdk.LockEntry{Name: "web-search", InterfaceMajor: 2})
+
+	out := filepath.Join(dir, "child-0.1.0.aagent")
+	m, err := agent.Pack(out)
+	if err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+	if len(m.Extends) != 1 || m.Extends[0].Name != "acme/base-agent" {
+		t.Fatalf("unexpected extends: %+v", m.Extends)
+	}
+	if len(m.Lockfile) != 1 || m.Lockfile[0].InterfaceMajor != 2 {
+		t.Fatalf("unexpected lockfile: %+v", m.Lockfile)
+	}
+	ac, err := m.AagentConfig()
+	if err != nil {
+		t.Fatalf("AagentConfig: %v", err)
+	}
+	if ac.PromptMode != "append" {
+		t.Fatalf("expected prompt_mode=append, got %q", ac.PromptMode)
 	}
 }
 
@@ -167,14 +246,13 @@ func TestAgentWithFlattenRules(t *testing.T) {
 }
 
 func TestValidationRejectsComponentsOnTool(t *testing.T) {
-	// Build a manifest dict that has components on a tool — schema should reject it.
 	raw := map[string]interface{}{
 		"schema_version": "2",
 		"name":           "acme/bad-tool",
 		"version":        "0.1.0",
-		"kind":           "tool",
+		"kind":           "atool",
 		"description":    "tool with components",
-		"config":         map[string]interface{}{"kind": "tool", "binary": "bin/x"},
+		"config":         map[string]interface{}{"kind": "atool", "binary": "bin/x"},
 		"components":     []interface{}{map[string]interface{}{"ref": "acme/foo@1.0.0"}},
 	}
 	b, _ := json.Marshal(raw)
@@ -185,14 +263,32 @@ func TestValidationRejectsComponentsOnTool(t *testing.T) {
 	}
 }
 
+func TestValidationRejectsExtendsOnAtool(t *testing.T) {
+	raw := map[string]interface{}{
+		"schema_version": "2",
+		"name":           "acme/bad-tool",
+		"version":        "0.1.0",
+		"kind":           "atool",
+		"description":    "atool that wrongly carries extends",
+		"config":         map[string]interface{}{"kind": "atool", "binary": "bin/x"},
+		"extends":        []interface{}{map[string]interface{}{"name": "acme/base", "version": "1.0.0"}},
+	}
+	b, _ := json.Marshal(raw)
+	var m alexsdk.Manifest
+	_ = json.Unmarshal(b, &m)
+	if err := alexsdk.AssertValid(&m); err == nil {
+		t.Fatal("expected validation error for extends on atool")
+	}
+}
+
 func TestValidationAcceptsRefToToolInAgentComponents(t *testing.T) {
 	raw := map[string]interface{}{
 		"schema_version": "2",
 		"name":           "acme/agent-with-tool-ref",
 		"version":        "0.1.0",
-		"kind":           "agent",
+		"kind":           "aagent",
 		"description":    "agent that refs a tool",
-		"config":         map[string]interface{}{"kind": "agent", "system_prompt": "hi"},
+		"config":         map[string]interface{}{"kind": "aagent", "system_prompt": "hi"},
 		"components":     []interface{}{map[string]interface{}{"ref": "acme/some-tool@1.0.0"}},
 	}
 	b, _ := json.Marshal(raw)
@@ -205,26 +301,28 @@ func TestValidationAcceptsRefToToolInAgentComponents(t *testing.T) {
 	}
 }
 
-func TestSkillBuilderLLMField(t *testing.T) {
+func TestSkillEmitsAagentWithModel(t *testing.T) {
 	dir := t.TempDir()
-	out := filepath.Join(dir, "skill-0.1.0.atool")
+	out := filepath.Join(dir, "skill-0.1.0.aagent")
 
 	skill := alexsdk.NewSkill("acme/myskill", "0.1.0").
-		Description("a skill with llm hint").
+		Description("a prompt-only skill").
 		SystemPrompt("You are specialized.").
-		LLM("claude-haiku").
-		Tags([]string{"research"})
+		Model("claude-haiku")
 
 	m, err := skill.Pack(out)
 	if err != nil {
 		t.Fatalf("Pack: %v", err)
 	}
-	sc, err := m.SkillConfig()
-	if err != nil {
-		t.Fatalf("SkillConfig: %v", err)
+	if m.Kind != alexsdk.KindAagent {
+		t.Fatalf("expected kind=aagent, got %q", m.Kind)
 	}
-	if sc.LLM != "claude-haiku" {
-		t.Fatalf("expected llm=claude-haiku, got %q", sc.LLM)
+	sc, err := m.AagentConfig()
+	if err != nil {
+		t.Fatalf("AagentConfig: %v", err)
+	}
+	if sc.Model != "claude-haiku" {
+		t.Fatalf("expected model=claude-haiku, got %q", sc.Model)
 	}
 }
 
@@ -236,10 +334,113 @@ func TestInvalidManifestMissingDescription(t *testing.T) {
 	}
 }
 
-// TestMigrateV1BundleToAgent tests that migrate converts bundle→agent.
-// This is a unit test of the migrate logic exposed via the Go CLI.
-// The actual CLI is tested via the migrate command.
-func TestMigrateManifest(t *testing.T) {
+// --- Migration tests ---
+
+func TestMigrateV1ToolBecomesMcpByDefault(t *testing.T) {
+	v1 := map[string]interface{}{
+		"schema_version": "1",
+		"name":           "acme/mytool",
+		"version":        "0.1.0",
+		"kind":           "tool",
+		"description":    "http tool",
+		"config":         map[string]interface{}{"kind": "tool", "binary": "bin/x", "transport": "http"},
+	}
+	m, _, errs := alexsdk.MigrateManifest(v1)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if m["kind"] != "mcp" {
+		t.Fatalf("expected kind=mcp, got %v", m["kind"])
+	}
+	cfg := m["config"].(map[string]interface{})
+	if cfg["kind"] != "mcp" {
+		t.Fatalf("expected config.kind=mcp, got %v", cfg["kind"])
+	}
+}
+
+func TestMigrateV1GrpcToolBecomesAtool(t *testing.T) {
+	v1 := map[string]interface{}{
+		"schema_version": "1",
+		"name":           "acme/mytool",
+		"version":        "0.1.0",
+		"kind":           "tool",
+		"description":    "grpc tool",
+		"config":         map[string]interface{}{"kind": "tool", "binary": "bin/x", "transport": "grpc"},
+	}
+	m, _, errs := alexsdk.MigrateManifest(v1)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if m["kind"] != "atool" {
+		t.Fatalf("expected kind=atool, got %v", m["kind"])
+	}
+}
+
+func TestMigrateV1AgentKeepsModel(t *testing.T) {
+	v1 := map[string]interface{}{
+		"schema_version": "1",
+		"name":           "acme/myagent",
+		"version":        "0.1.0",
+		"kind":           "agent",
+		"description":    "test agent",
+		"config":         map[string]interface{}{"kind": "agent", "system_prompt": "hello", "model": "claude-opus-4-7"},
+	}
+	m, _, errs := alexsdk.MigrateManifest(v1)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if m["kind"] != "aagent" {
+		t.Fatalf("expected kind=aagent, got %v", m["kind"])
+	}
+	cfg := m["config"].(map[string]interface{})
+	if cfg["kind"] != "aagent" || cfg["model"] != "claude-opus-4-7" {
+		t.Fatalf("unexpected config: %v", cfg)
+	}
+	if _, ok := cfg["llm"]; ok {
+		t.Fatal("did not expect llm key")
+	}
+}
+
+func TestMigrateV1SkillDropsTags(t *testing.T) {
+	v1 := map[string]interface{}{
+		"schema_version": "1",
+		"name":           "acme/myskill",
+		"version":        "0.2.0",
+		"kind":           "skill",
+		"description":    "a skill",
+		"config": map[string]interface{}{
+			"kind":          "skill",
+			"system_prompt": "hi",
+			"model_hint":    "claude-haiku",
+			"tags":          []interface{}{"a", "b"},
+		},
+	}
+	m, warnings, errs := alexsdk.MigrateManifest(v1)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if m["kind"] != "aagent" {
+		t.Fatalf("expected kind=aagent, got %v", m["kind"])
+	}
+	cfg := m["config"].(map[string]interface{})
+	if cfg["model"] != "claude-haiku" {
+		t.Fatalf("expected model=claude-haiku, got %v", cfg["model"])
+	}
+	if _, ok := cfg["tags"]; ok {
+		t.Fatal("expected tags to be dropped")
+	}
+	found := false
+	for _, w := range warnings {
+		if w == "config.tags removed (EE aagent has no tags field)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected tags-removed warning, got %v", warnings)
+	}
+}
+
+func TestMigrateV1BundleToAagent(t *testing.T) {
 	v1 := map[string]interface{}{
 		"schema_version": "1",
 		"name":           "acme/mybundle",
@@ -251,12 +452,12 @@ func TestMigrateManifest(t *testing.T) {
 			"components": []interface{}{"acme/foo@1.0.0", "acme/bar@2.0.0"},
 		},
 	}
-	result, warnings, errors := alexsdk.MigrateManifest(v1)
-	if len(errors) > 0 {
-		t.Fatalf("unexpected errors: %v", errors)
+	result, warnings, errs := alexsdk.MigrateManifest(v1)
+	if len(errs) > 0 {
+		t.Fatalf("unexpected errors: %v", errs)
 	}
-	if result["kind"] != "agent" {
-		t.Fatalf("expected kind=agent, got %v", result["kind"])
+	if result["kind"] != "aagent" {
+		t.Fatalf("expected kind=aagent, got %v", result["kind"])
 	}
 	if len(warnings) == 0 {
 		t.Fatal("expected at least one warning")
@@ -276,8 +477,8 @@ func TestMigrateLLMRuntimeErrors(t *testing.T) {
 		"description":    "a runtime",
 		"config":         map[string]interface{}{"kind": "llm-runtime"},
 	}
-	_, _, errors := alexsdk.MigrateManifest(v1)
-	if len(errors) == 0 {
+	_, _, errs := alexsdk.MigrateManifest(v1)
+	if len(errs) == 0 {
 		t.Fatal("expected error for llm-runtime kind")
 	}
 }

@@ -1,8 +1,11 @@
-//! Round-trip tests for the SDK builders and pack/verify pipeline.
+//! Round-trip tests for the SDK builders and pack/verify pipeline
+//! (EE-canonical schema v2).
 
 use std::io::Write;
 
-use alex_sdk::manifest::{ComponentItem, InstallFlatten};
+use alex_sdk::manifest::{
+    ComponentItem, InstallFlatten, LockEntry, PackageConfig, PackageDep, PromptMode, WireTransport,
+};
 use alex_sdk::migrate::migrate_manifest;
 use alex_sdk::{verify, Agent, Skill, Tool};
 
@@ -14,7 +17,8 @@ fn agent_build_pack_verify_roundtrip() {
     let manifest = Agent::new("acme/hello", "0.1.0")
         .description("a tiny hello agent")
         .system_prompt("You are a helpful assistant.")
-        .llm("claude-haiku")
+        .model("claude-haiku")
+        .history_limit(50)
         .pack(&out)
         .expect("pack");
 
@@ -25,17 +29,15 @@ fn agent_build_pack_verify_roundtrip() {
     let v = verify(&out).expect("verify");
     assert_eq!(v.name, "acme/hello");
 
-    // Check llm field round-trips
-    use alex_sdk::manifest::PackageConfig;
-    if let PackageConfig::Agent(cfg) = &v.config {
-        assert_eq!(cfg.llm.as_deref(), Some("claude-haiku"));
+    if let PackageConfig::Aagent(cfg) = &v.config {
+        assert_eq!(cfg.model.as_deref(), Some("claude-haiku"));
     } else {
-        panic!("expected AgentConfig");
+        panic!("expected AagentConfig");
     }
 }
 
 #[test]
-fn tool_stage_file_populates_sha256() {
+fn tool_defaults_to_atool_and_populates_sha256() {
     let dir = tempfile::tempdir().expect("tempdir");
     let bin_path = dir.path().join("dummy-bin");
     {
@@ -47,9 +49,17 @@ fn tool_stage_file_populates_sha256() {
     let manifest = Tool::new("acme/dummy", "0.1.0")
         .description("dummy tool")
         .binary("./dummy-bin")
+        .interface_major(2)
         .stage_file(&bin_path, "dummy-bin", "bin/dummy-bin", true)
         .pack(&out)
         .expect("pack");
+
+    assert_eq!(manifest.kind, alex_sdk::manifest::Kind::Atool);
+    if let PackageConfig::Atool(cfg) = &manifest.config {
+        assert_eq!(cfg.interface_major, Some(2));
+    } else {
+        panic!("expected AtoolConfig");
+    }
 
     let files = manifest.files.expect("files set");
     assert_eq!(files.len(), 1);
@@ -58,6 +68,37 @@ fn tool_stage_file_populates_sha256() {
     assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
 
     verify(&out).expect("verify");
+}
+
+#[test]
+fn tool_transport_http_retaxes_to_mcp() {
+    let manifest = Tool::new("acme/mcptool", "0.1.0")
+        .description("mcp daemon")
+        .binary("bin/x")
+        .port(7800)
+        .transport(WireTransport::Http)
+        .build()
+        .expect("build");
+    assert_eq!(manifest.kind, alex_sdk::manifest::Kind::Mcp);
+    match &manifest.config {
+        PackageConfig::Mcp(_) => {}
+        _ => panic!("expected McpConfig"),
+    }
+}
+
+#[test]
+fn tool_transport_grpc_stays_atool() {
+    let manifest = Tool::new("acme/g", "0.1.0")
+        .description("grpc tool")
+        .binary("bin/g")
+        .transport(WireTransport::Grpc)
+        .build()
+        .expect("build");
+    assert_eq!(manifest.kind, alex_sdk::manifest::Kind::Atool);
+    match &manifest.config {
+        PackageConfig::Atool(_) => {}
+        _ => panic!("expected AtoolConfig"),
+    }
 }
 
 #[test]
@@ -114,6 +155,37 @@ fn agent_with_inline_sub_agent_round_trips() {
 }
 
 #[test]
+fn agent_extends_and_lockfile_round_trips() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("child-0.1.0.aagent");
+
+    let manifest = Agent::new("acme/child", "0.1.0")
+        .description("child agent extending a base")
+        .system_prompt("You extend a base agent.")
+        .prompt_mode(PromptMode::Append)
+        .extend(PackageDep {
+            name: "acme/base-agent".to_string(),
+            version: Some("1.0.0".to_string()),
+        })
+        .lock(LockEntry {
+            name: "web-search".to_string(),
+            interface_major: 2,
+            contract_hash: None,
+        })
+        .pack(&out)
+        .expect("pack");
+
+    let extends = manifest.extends.expect("extends");
+    assert_eq!(extends.len(), 1);
+    assert_eq!(extends[0].name, "acme/base-agent");
+    let lock = manifest.lockfile.expect("lockfile");
+    assert_eq!(lock[0].name, "web-search");
+    assert_eq!(lock[0].interface_major, 2);
+
+    verify(&out).expect("verify");
+}
+
+#[test]
 fn agent_with_flatten_rules_round_trips() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = dir.path().join("flat-0.1.0.aagent");
@@ -125,7 +197,7 @@ fn agent_with_flatten_rules_round_trips() {
         .flatten(InstallFlatten {
             system_prompt: Some("concat".to_string()),
             allowed_tools: Some("union".to_string()),
-            llm: None,
+            model: None,
             history_limit: None,
         })
         .pack(&out)
@@ -140,24 +212,22 @@ fn agent_with_flatten_rules_round_trips() {
 }
 
 #[test]
-fn skill_builder_llm_field_round_trips() {
+fn skill_emits_aagent_with_model() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = dir.path().join("skill-0.1.0.atool");
+    let out = dir.path().join("skill-0.1.0.aagent");
 
     let manifest = Skill::new("acme/myskill", "0.1.0")
-        .description("a skill with llm hint")
+        .description("a prompt-only skill")
         .system_prompt("You are specialized.")
-        .llm("claude-haiku")
-        .tags(vec!["research".to_string()])
+        .model("claude-haiku")
         .pack(&out)
         .expect("pack");
 
-    use alex_sdk::manifest::PackageConfig;
-    if let PackageConfig::Skill(cfg) = &manifest.config {
-        assert_eq!(cfg.llm.as_deref(), Some("claude-haiku"));
-        assert_eq!(cfg.tags.as_deref(), Some(["research".to_string()].as_slice()));
+    assert_eq!(manifest.kind, alex_sdk::manifest::Kind::Aagent);
+    if let PackageConfig::Aagent(cfg) = &manifest.config {
+        assert_eq!(cfg.model.as_deref(), Some("claude-haiku"));
     } else {
-        panic!("expected SkillConfig");
+        panic!("expected AagentConfig");
     }
 
     verify(&out).expect("verify");
@@ -165,9 +235,7 @@ fn skill_builder_llm_field_round_trips() {
 
 #[test]
 fn invalid_manifest_missing_description_fails_build() {
-    let result = Agent::new("acme/sad", "0.1.0")
-        .system_prompt("hi")
-        .build();
+    let result = Agent::new("acme/sad", "0.1.0").system_prompt("hi").build();
     assert!(result.is_err(), "build should fail on empty description");
 }
 
@@ -176,67 +244,118 @@ fn invalid_manifest_missing_description_fails_build() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn migrate_v1_agent_renames_model_to_llm() {
+fn migrate_v1_tool_becomes_mcp_by_default() {
+    let v1 = serde_json::json!({
+        "schema_version": "1",
+        "name": "acme/mytool",
+        "version": "0.1.0",
+        "kind": "tool",
+        "description": "http tool",
+        "config": { "kind": "tool", "binary": "bin/x", "transport": "http" }
+    });
+    let result = migrate_manifest(v1);
+    assert!(result.errors.is_empty());
+    assert_eq!(result.manifest["kind"], "mcp");
+    assert_eq!(result.manifest["config"]["kind"], "mcp");
+}
+
+#[test]
+fn migrate_v1_grpc_tool_becomes_atool() {
+    let v1 = serde_json::json!({
+        "schema_version": "1",
+        "name": "acme/mytool",
+        "version": "0.1.0",
+        "kind": "tool",
+        "description": "grpc tool",
+        "config": { "kind": "tool", "binary": "bin/x", "transport": "grpc" }
+    });
+    let result = migrate_manifest(v1);
+    assert!(result.errors.is_empty());
+    assert_eq!(result.manifest["kind"], "atool");
+    assert_eq!(result.manifest["config"]["kind"], "atool");
+}
+
+#[test]
+fn migrate_v1_agent_keeps_config_model() {
     let v1 = serde_json::json!({
         "schema_version": "1",
         "name": "acme/myagent",
         "version": "0.1.0",
         "kind": "agent",
         "description": "test agent",
-        "config": {
-            "kind": "agent",
-            "system_prompt": "hello",
-            "model": "claude-opus-4-7"
-        }
+        "config": { "kind": "agent", "system_prompt": "hello", "model": "claude-opus-4-7" }
     });
     let result = migrate_manifest(v1);
     assert!(result.errors.is_empty());
     assert_eq!(result.manifest["schema_version"], "2");
-    assert_eq!(result.manifest["config"]["llm"], "claude-opus-4-7");
-    assert!(result.manifest["config"].get("model").is_none());
-    assert!(result.warnings.iter().any(|w| w.contains("model renamed")));
+    assert_eq!(result.manifest["kind"], "aagent");
+    assert_eq!(result.manifest["config"]["kind"], "aagent");
+    assert_eq!(result.manifest["config"]["model"], "claude-opus-4-7");
+    assert!(result.manifest["config"].get("llm").is_none());
 }
 
 #[test]
-fn migrate_v1_skill_renames_model_hint_to_llm() {
+fn migrate_intermediate_llm_folds_to_model() {
+    let v1 = serde_json::json!({
+        "schema_version": "1",
+        "name": "acme/myagent",
+        "version": "0.1.0",
+        "kind": "agent",
+        "description": "test agent",
+        "config": { "kind": "agent", "system_prompt": "hello", "llm": "claude-opus-4-7" }
+    });
+    let result = migrate_manifest(v1);
+    assert!(result.errors.is_empty());
+    assert_eq!(result.manifest["config"]["model"], "claude-opus-4-7");
+    assert!(result.manifest["config"].get("llm").is_none());
+    assert!(result
+        .warnings
+        .iter()
+        .any(|w| w.contains("llm renamed to config.model")));
+}
+
+#[test]
+fn migrate_v1_skill_to_aagent_drops_tags() {
     let v1 = serde_json::json!({
         "schema_version": "1",
         "name": "acme/myskill",
         "version": "0.2.0",
         "kind": "skill",
         "description": "a skill",
-        "config": {
-            "kind": "skill",
-            "system_prompt": "hi",
-            "model_hint": "claude-haiku"
-        }
+        "config": { "kind": "skill", "system_prompt": "hi", "model_hint": "claude-haiku", "tags": ["a", "b"] }
     });
     let result = migrate_manifest(v1);
     assert!(result.errors.is_empty());
-    assert_eq!(result.manifest["config"]["llm"], "claude-haiku");
+    assert_eq!(result.manifest["kind"], "aagent");
+    assert_eq!(result.manifest["config"]["kind"], "aagent");
+    assert_eq!(result.manifest["config"]["model"], "claude-haiku");
     assert!(result.manifest["config"].get("model_hint").is_none());
+    assert!(result.manifest["config"].get("tags").is_none());
+    assert!(result.warnings.iter().any(|w| w.contains("tags removed")));
 }
 
 #[test]
-fn migrate_v1_bundle_converts_to_agent() {
+fn migrate_v1_bundle_converts_to_aagent() {
     let v1 = serde_json::json!({
         "schema_version": "1",
         "name": "acme/mybundle",
         "version": "0.1.0",
         "kind": "bundle",
         "description": "a bundle",
-        "config": {
-            "kind": "bundle",
-            "components": ["acme/foo@1.0.0", "acme/bar@2.0.0"]
-        }
+        "config": { "kind": "bundle", "components": ["acme/foo@1.0.0", "acme/bar@2.0.0"] }
     });
     let result = migrate_manifest(v1);
     assert!(result.errors.is_empty());
-    assert_eq!(result.manifest["kind"], "agent");
-    let comps = result.manifest["components"].as_array().expect("components");
+    assert_eq!(result.manifest["kind"], "aagent");
+    let comps = result.manifest["components"]
+        .as_array()
+        .expect("components");
     assert_eq!(comps.len(), 2);
     assert_eq!(comps[0]["ref"], "acme/foo@1.0.0");
-    assert!(result.warnings.iter().any(|w| w.contains("bundle converted")));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|w| w.contains("bundle converted")));
 }
 
 #[test]

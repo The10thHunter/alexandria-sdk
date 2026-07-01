@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/The10thHunter/alexandria-sdk/main/schemas/atool.schema.json",
   "title": "Alexandria atool manifest",
-  "description": "Manifest for .atool and .aagent packages. Source of truth across all SDKs and the LSP.",
+  "description": "Manifest for .atool and .aagent packages (EE-canonical schema v2). Source of truth across all SDKs and the LSP. Kinds and field names mirror ee/crates/alex-package/src/manifest.rs.",
   "type": "object",
   "required": ["schema_version", "name", "version", "kind", "description", "config"],
   "additionalProperties": false,
@@ -19,7 +19,7 @@
       "description": "SemVer."
     },
     "kind": {
-      "enum": ["tool", "skill", "agent"]
+      "enum": ["mcp", "atool", "aagent"]
     },
     "description": { "type": "string", "minLength": 1 },
     "author": { "type": "string" },
@@ -27,15 +27,17 @@
     "requires_alexandria": { "type": "string" },
     "dependencies": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["name", "version"],
-        "additionalProperties": false,
-        "properties": {
-          "name": { "type": "string" },
-          "version": { "type": "string" }
-        }
-      }
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "extends": {
+      "type": "array",
+      "description": "Base packages this aagent extends. aagent-only.",
+      "items": { "$ref": "#/$defs/packageDep" }
+    },
+    "lockfile": {
+      "type": "array",
+      "description": "Resolved inheritance lockfile (aagent-only).",
+      "items": { "$ref": "#/$defs/lockEntry" }
     },
     "files": {
       "type": "array",
@@ -52,9 +54,9 @@
     },
     "config": {
       "oneOf": [
-        { "$ref": "#/$defs/toolConfig" },
-        { "$ref": "#/$defs/agentConfig" },
-        { "$ref": "#/$defs/skillConfig" }
+        { "$ref": "#/$defs/mcpConfig" },
+        { "$ref": "#/$defs/atoolConfig" },
+        { "$ref": "#/$defs/aagentConfig" }
       ]
     },
     "components": {
@@ -71,7 +73,7 @@
           "properties": {
             "system_prompt": { "enum": ["concat", "root_wins", "error_on_conflict"] },
             "allowed_tools": { "enum": ["union", "root_wins"] },
-            "llm": { "const": "root_wins" },
+            "model": { "const": "root_wins" },
             "history_limit": { "const": "root_wins" }
           }
         }
@@ -92,35 +94,69 @@
   "allOf": [
     {
       "if": {
-        "properties": { "kind": { "const": "tool" } },
+        "properties": { "kind": { "const": "mcp" } },
         "required": ["kind"]
       },
       "then": {
-        "properties": { "config": { "$ref": "#/$defs/toolConfig" } },
+        "properties": {
+          "config": { "$ref": "#/$defs/mcpConfig" },
+          "extends": { "maxItems": 0 }
+        },
         "not": { "required": ["components"] }
       }
     },
     {
       "if": {
-        "properties": { "kind": { "const": "skill" } },
+        "properties": { "kind": { "const": "atool" } },
         "required": ["kind"]
       },
       "then": {
-        "properties": { "config": { "$ref": "#/$defs/skillConfig" } },
+        "properties": {
+          "config": { "$ref": "#/$defs/atoolConfig" },
+          "extends": { "maxItems": 0 }
+        },
         "not": { "required": ["components"] }
       }
     },
     {
       "if": {
-        "properties": { "kind": { "const": "agent" } },
+        "properties": { "kind": { "const": "aagent" } },
         "required": ["kind"]
       },
       "then": {
-        "properties": { "config": { "$ref": "#/$defs/agentConfig" } }
+        "properties": { "config": { "$ref": "#/$defs/aagentConfig" } }
       }
     }
   ],
   "$defs": {
+    "dependency": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "packageDep": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string" }
+      }
+    },
+    "lockEntry": {
+      "type": "object",
+      "required": ["name", "interface_major"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "interface_major": { "type": "integer", "minimum": 0 },
+        "contract_hash": { "type": "string" }
+      }
+    },
     "file": {
       "type": "object",
       "required": ["archive_path", "install_path"],
@@ -154,16 +190,17 @@
         }
       }
     },
-    "toolConfig": {
+    "mcpConfig": {
       "type": "object",
       "required": ["kind", "binary"],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "tool" },
+        "kind": { "const": "mcp" },
         "binary": { "type": "string", "minLength": 1 },
-        "default_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "default_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "transport": { "enum": ["http", "sse"] },
         "args": { "type": "array", "items": { "type": "string" } },
+        "interface_major": { "type": "integer", "minimum": 1 },
         "k8s_image": { "type": "string" },
         "k8s_capabilities": { "type": "array", "items": { "type": "string" } },
         "k8s_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
@@ -173,28 +210,37 @@
         "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 }
       }
     },
-    "agentConfig": {
+    "atoolConfig": {
       "type": "object",
-      "required": ["kind", "system_prompt"],
+      "required": ["kind", "binary"],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "agent" },
-        "system_prompt": { "type": "string", "minLength": 1 },
-        "allowed_tools": { "type": "array", "items": { "type": "string" } },
-        "llm": { "type": "string" },
-        "history_limit": { "type": "integer", "minimum": 1 }
+        "kind": { "const": "atool" },
+        "binary": { "type": "string", "minLength": 1 },
+        "default_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "transport": { "enum": ["grpc", "http", "sse"] },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "interface_major": { "type": "integer", "minimum": 1 },
+        "k8s_image": { "type": "string" },
+        "k8s_capabilities": { "type": "array", "items": { "type": "string" } },
+        "k8s_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "k8s_transport": { "enum": ["grpc", "http", "sse"] },
+        "k8s_resources": { "$ref": "#/$defs/k8sResources" },
+        "k8s_min_warm": { "type": "integer", "minimum": 0 },
+        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 }
       }
     },
-    "skillConfig": {
+    "aagentConfig": {
       "type": "object",
       "required": ["kind", "system_prompt"],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "skill" },
+        "kind": { "const": "aagent" },
         "system_prompt": { "type": "string", "minLength": 1 },
         "allowed_tools": { "type": "array", "items": { "type": "string" } },
-        "llm": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } }
+        "model": { "type": "string" },
+        "history_limit": { "type": "integer", "minimum": 1 },
+        "prompt_mode": { "enum": ["append", "replace"] }
       }
     },
     "componentItem": {
@@ -218,13 +264,8 @@
               "pattern": "^([a-z0-9][a-z0-9_-]*/)?[a-z0-9][a-z0-9_-]*@\\d+\\.\\d+\\.\\d+",
               "description": "Canonical ns/name@version used for coalescing."
             },
-            "kind": { "enum": ["agent", "skill"] },
-            "config": {
-              "oneOf": [
-                { "$ref": "#/$defs/agentConfig" },
-                { "$ref": "#/$defs/skillConfig" }
-              ]
-            },
+            "kind": { "const": "aagent" },
+            "config": { "$ref": "#/$defs/aagentConfig" },
             "components": {
               "type": "array",
               "items": { "$ref": "#/$defs/componentItem" }
@@ -244,15 +285,7 @@
             },
             "dependencies": {
               "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["name", "version"],
-                "additionalProperties": false,
-                "properties": {
-                  "name": { "type": "string" },
-                  "version": { "type": "string" }
-                }
-              }
+              "items": { "$ref": "#/$defs/dependency" }
             }
           }
         }

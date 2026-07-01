@@ -38,6 +38,20 @@ export async function pack(srcDir: string, outPath: string): Promise<Manifest> {
   assertValid(manifest);
 
   const tar = tarPack();
+
+  // Start draining the tar readable into the gzipped output file BEFORE writing
+  // any entries. tar-stream applies per-entry backpressure: a sized file entry
+  // will not accept its body until the readable is being consumed downstream.
+  // With the consumer attached only after finalize(), the first file entry's
+  // `pipe(createReadStream, entry)` deadlocks and never settles — the CLI then
+  // exits 0 with no archive. File-less aagents dodged this because the small
+  // manifest entry fits tar-stream's internal buffer.
+  const outputDone = pipe(
+    tar as unknown as Readable,
+    createGzip(),
+    createWriteStream(outPath),
+  );
+
   const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2));
   tar.entry({ name: "atool.json", size: manifestBytes.length, mode: 0o644 }, manifestBytes);
 
@@ -50,7 +64,7 @@ export async function pack(srcDir: string, outPath: string): Promise<Manifest> {
   }
   tar.finalize();
 
-  await pipe(tar as unknown as Readable, createGzip(), createWriteStream(outPath));
+  await outputDone;
   return manifest;
 }
 

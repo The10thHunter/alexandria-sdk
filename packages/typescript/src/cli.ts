@@ -5,7 +5,14 @@ import { fileURLToPath } from "node:url";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pack, verify, inspect } from "./pack.js";
+import { publish } from "./publish.js";
 import type { Manifest } from "./types.js";
+
+/** Return the value following `name` in `args` (e.g. --registry <url>), or undefined. */
+function flagVal(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TEMPLATES_CANDIDATES = [
@@ -28,6 +35,9 @@ USAGE
   alex-sdk verify <pkg>              Re-hash files, validate manifest
   alex-sdk inspect <pkg>             Print manifest + file list
   alex-sdk migrate <src> [-o out]    Upgrade v1 atool.json to v2
+  alex-sdk publish <pkg>             Publish a packed archive to a registry
+                                     [--registry <url>] [--token <t>] [--artifact-type <t>]
+                                     (env: ALEX_REGISTRY_URL, ALEX_REGISTRY_TOKEN)
 
 TEMPLATES
   tool-node, tool-python, agent-basic, agent-collection
@@ -436,6 +446,18 @@ async function main() {
     }
     case "migrate": {
       await cmdMigrate(rest);
+      return;
+    }
+    case "publish": {
+      const pkg = rest[0];
+      if (!pkg || pkg.startsWith("--")) die("usage: alex-sdk publish <pkg> [--registry <url>] [--token <t>] [--artifact-type <t>]");
+      const registry = flagVal(rest, "--registry") ?? process.env.ALEX_REGISTRY_URL;
+      if (!registry) die("no registry: pass --registry <url> or set ALEX_REGISTRY_URL");
+      const token = flagVal(rest, "--token") ?? process.env.ALEX_REGISTRY_TOKEN;
+      const artifactType = flagVal(rest, "--artifact-type");
+      const r = await publish(pkg, { registry, token, artifactType });
+      if (!r.ok) die(`publish failed (${r.status}): ${typeof r.body === "string" ? r.body : JSON.stringify(r.body)}`);
+      process.stdout.write(`Published ${r.name}@${r.version} (${r.artifactType}) -> ${registry} [${r.status}]\n`);
       return;
     }
     case "new": {

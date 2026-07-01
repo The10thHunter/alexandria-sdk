@@ -45,11 +45,19 @@ function die(msg: string, code = 1): never { process.stderr.write(msg + "\n"); p
 function defaultOutPath(srcDir: string, manifestKind: string): string {
   const m = JSON.parse(readFileSync(join(srcDir, "atool.json"), "utf8"));
   const short = String(m.name).split("/").pop();
-  const ext = manifestKind === "agent" ? "aagent" : "atool";
+  const ext = manifestKind === "aagent" ? "aagent" : "atool";
   return `${short}-${m.version}.${ext}`;
 }
 
-/** Migrate a v1 manifest object to v2. Returns { manifest, warnings, errors }. */
+/**
+ * Migrate a v1 manifest object to the EE-canonical v2 taxonomy.
+ * Returns { manifest, warnings, errors }.
+ *
+ * Kind remap:  tool -> mcp|atool (by transport: grpc=>atool, else mcp);
+ *              skill -> aagent;  agent -> aagent;  bundle -> aagent.
+ * Field remap: model stays model (EE uses `model`); model_hint/llm -> model;
+ *              aagent tags dropped (no such field in EE AagentConfig).
+ */
 export function migrateManifest(v1: Record<string, unknown>): { manifest: Record<string, unknown>; warnings: string[]; errors: string[] } {
   const warnings: string[] = [];
   const errors: string[] = [];
@@ -62,42 +70,71 @@ export function migrateManifest(v1: Record<string, unknown>): { manifest: Record
   const kind = m.kind as string;
   if (kind === "llm-runtime" || kind === "llm-backend") {
     errors.push(
-      `kind '${kind}' has no v2 equivalent; register via \`alexandria llm install\` instead`
+      `kind '${kind}' has no v2 equivalent; register a model via \`alexandria install <name> --model\` (.amodel) instead`
     );
     return { manifest: m, warnings, errors };
   }
+
   if (kind === "bundle") {
-    m.kind = "agent";
-    warnings.push("bundle converted to agent; add config.system_prompt before publishing");
-    // Convert bundleConfig.components -> top-level components[]
-    const cfg = (m.config ?? {}) as Record<string, unknown>;
-    const oldComponents = cfg.components as string[] | undefined;
+    // A bundle collapses to an aagent orchestrator carrying components[] refs.
+    m.kind = "aagent";
+    warnings.push("bundle converted to aagent; add config.system_prompt before publishing");
+    const bcfg = (m.config ?? {}) as Record<string, unknown>;
+    const oldComponents = bcfg.components as string[] | undefined;
     if (Array.isArray(oldComponents)) {
       m.components = oldComponents.map((ref: string) => ({ ref }));
     }
-    // Replace bundle config with a minimal agent config
-    m.config = {
-      kind: "agent",
-      system_prompt: "TODO: add system_prompt",
-    };
+    m.config = { kind: "aagent", system_prompt: "TODO: add system_prompt" };
+  } else if (kind === "tool") {
+    // A v1 tool becomes mcp (MCP JSON-RPC/SSE) or atool (native gRPC),
+    // discriminated by transport. Default (no transport) is MCP over http.
+    const cfg = (m.config ?? {}) as Record<string, unknown>;
+    const newKind = cfg.transport === "grpc" ? "atool" : "mcp";
+    m.kind = newKind;
+    cfg.kind = newKind;
+    m.config = cfg;
+    if (newKind === "atool") {
+      warnings.push("kind 'tool' with transport=grpc migrated to kind 'atool' (native ToolService)");
+    } else {
+      warnings.push("kind 'tool' migrated to kind 'mcp' (MCP JSON-RPC/SSE)");
+    }
+  } else if (kind === "skill") {
+    // EE has no standalone skill kind — a skill is reusable prompt text that
+    // ships as an aagent whose content is its system_prompt.
+    m.kind = "aagent";
+    const cfg = (m.config ?? {}) as Record<string, unknown>;
+    cfg.kind = "aagent";
+    m.config = cfg;
+    warnings.push("kind 'skill' migrated to kind 'aagent' (skills live in aagent.system_prompt)");
+  } else if (kind === "agent") {
+    const cfg = (m.config ?? {}) as Record<string, unknown>;
+    cfg.kind = "aagent";
+    m.config = cfg;
+    m.kind = "aagent";
   }
 
-  // Migrate config fields
+  // Migrate config fields to EE serde names.
   const cfg = (m.config ?? {}) as Record<string, unknown>;
-  if ("model" in cfg) {
-    cfg.llm = cfg.model;
-    delete cfg.model;
-    warnings.push("config.model renamed to config.llm");
+  // EE uses `model`; the intermediate SDK-v2 field `llm` folds back to it.
+  if ("llm" in cfg) {
+    cfg.model = cfg.llm;
+    delete cfg.llm;
+    warnings.push("config.llm renamed to config.model");
   }
   if ("model_hint" in cfg) {
-    cfg.llm = cfg.model_hint;
+    cfg.model = cfg.model_hint;
     delete cfg.model_hint;
-    warnings.push("config.model_hint renamed to config.llm");
+    warnings.push("config.model_hint renamed to config.model");
   }
   // Remove default_mode (no longer a field)
   if ("default_mode" in cfg) {
     delete cfg.default_mode;
     warnings.push("config.default_mode removed (swarm is always default)");
+  }
+  // EE AagentConfig has no `tags` field.
+  if ("tags" in cfg) {
+    delete cfg.tags;
+    warnings.push("config.tags removed (EE aagent has no tags field)");
   }
   m.config = cfg;
 
@@ -121,12 +158,6 @@ export function migrateManifest(v1: Record<string, unknown>): { manifest: Record
   }
   if (strippedSigning.length > 0) {
     warnings.push(`signing fields removed (${strippedSigning.join(", ")}); re-sign after migration`);
-  }
-
-  // Warn about default_port: 0 (schema-invalid)
-  const toolCfg = m.config as Record<string, unknown>;
-  if (toolCfg.default_port === 0) {
-    warnings.push("default_port was 0 (schema-invalid); set to a valid port 1-65535");
   }
 
   // Warn about dependencies missing version
@@ -242,8 +273,10 @@ async function cmdNew(args: string[]) {
   try {
     stdout.write("alex-sdk new — minimal interactive scaffold\n\n");
 
-    const kind = await ask("Kind (tool/agent/skill)", "tool");
-    if (!["tool", "agent", "skill"].includes(kind)) die(`invalid kind '${kind}'`);
+    // Friendly authoring kinds map to EE kinds: tool -> mcp|atool (by transport),
+    // agent -> aagent, skill -> aagent (prompt-only).
+    const authorKind = await ask("Kind (tool/agent/skill)", "tool");
+    if (!["tool", "agent", "skill"].includes(authorKind)) die(`invalid kind '${authorKind}'`);
 
     const name = await ask("Name (ns/name)");
     if (!name) die("name is required");
@@ -253,7 +286,7 @@ async function cmdNew(args: string[]) {
     const short = name.split("/").pop()!;
 
     const version = await ask("Version", "0.1.0");
-    const description = await ask("Description", `${kind} ${name}`);
+    const description = await ask("Description", `${authorKind} ${name}`);
     const author = await ask("Author (optional)", "");
     const license = await ask("License (optional)", "");
 
@@ -269,7 +302,8 @@ async function cmdNew(args: string[]) {
       schema_version: "2",
       name,
       version,
-      kind,
+      // EE kind — filled in below once transport (for tools) is known.
+      kind: "",
       description,
     };
     if (author) manifest.author = author;
@@ -277,7 +311,7 @@ async function cmdNew(args: string[]) {
 
     const files: Array<Record<string, unknown>> = [];
 
-    if (kind === "tool") {
+    if (authorKind === "tool") {
       const binSrc = await ask("Binary path on disk (will be staged)");
       if (!binSrc) die("binary path is required for kind=tool");
       const binAbs = resolve(binSrc);
@@ -290,22 +324,28 @@ async function cmdNew(args: string[]) {
       copyFileSync(binAbs, join(outDir, archivePath));
       files.push({ archive_path: archivePath, install_path: installPath, executable: true });
 
-      const portStr = await ask("Default port (1-65535, optional)", "");
-      const transport = await ask("Transport (http/sse)", "http");
+      const portStr = await ask("Default port (0-65535, optional)", "");
+      // Transport picks the EE kind: grpc => atool (native ToolService),
+      // http/sse => mcp (MCP JSON-RPC/SSE).
+      const transport = await ask("Transport (grpc/http/sse)", "grpc");
+      if (!["grpc", "http", "sse"].includes(transport)) die(`invalid transport '${transport}'`);
+      const emitKind = transport === "grpc" ? "atool" : "mcp";
+      manifest.kind = emitKind;
 
       const config: Record<string, unknown> = {
-        kind: "tool",
+        kind: emitKind,
         binary: archivePath,
         transport,
       };
       if (portStr) {
         const p = Number(portStr);
-        if (!Number.isFinite(p) || p < 1 || p > 65535) die(`invalid port '${portStr}'`);
+        if (!Number.isFinite(p) || p < 0 || p > 65535) die(`invalid port '${portStr}'`);
         config.default_port = p;
       }
       manifest.config = config;
     } else {
-      // agent or skill
+      // agent or skill — both emit kind=aagent. A skill is prompt-only.
+      manifest.kind = "aagent";
       let systemPrompt = "";
       const promptSrc = await ask("System prompt — path to a .md/.txt file, or empty to type inline", "");
       if (promptSrc) {
@@ -316,25 +356,21 @@ async function cmdNew(args: string[]) {
         systemPrompt = await ask("Inline system_prompt", `You are ${name}.`);
       }
       const allowedRaw = await ask("Allowed tools (comma-separated, optional)", "");
-      const llm = await ask("Preferred LLM id (optional)", "");
+      const model = await ask("Preferred model id (optional)", "");
 
       const config: Record<string, unknown> = {
-        kind,
+        kind: "aagent",
         system_prompt: systemPrompt,
       };
       if (allowedRaw) config.allowed_tools = allowedRaw.split(",").map(s => s.trim()).filter(Boolean);
-      if (llm) config.llm = llm;
+      if (model) config.model = model;
 
-      if (kind === "skill") {
-        const tagsRaw = await ask("Tags (comma-separated, optional)", "");
-        if (tagsRaw) config.tags = tagsRaw.split(",").map(s => s.trim()).filter(Boolean);
-      } else {
-        const histStr = await ask("History limit (optional)", "");
-        if (histStr) {
-          const n = Number(histStr);
-          if (!Number.isFinite(n) || n < 1) die(`invalid history_limit '${histStr}'`);
-          config.history_limit = n;
-        }
+      // History limit applies to both agents and prompt-only skills (aagent).
+      const histStr = await ask("History limit (optional)", "");
+      if (histStr) {
+        const n = Number(histStr);
+        if (!Number.isFinite(n) || n < 1) die(`invalid history_limit '${histStr}'`);
+        config.history_limit = n;
       }
       manifest.config = config;
     }
@@ -347,7 +383,7 @@ async function cmdNew(args: string[]) {
 
     const doPack = autoPack ? true : await askYes("Pack now?", true);
     if (doPack) {
-      const ext = kind === "agent" ? "aagent" : "atool";
+      const ext = manifest.kind === "aagent" ? "aagent" : "atool";
       const out = await ask("Output archive", `${short}-${version}.${ext}`);
       const packed = await pack(outDir, out);
       stdout.write(`Packed ${packed.name}@${packed.version} -> ${out}\n`);

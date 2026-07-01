@@ -2,16 +2,16 @@
   "schema_version": "2",
   "name": "acme/my-tool",
   "version": "0.1.0",
-  "kind": "tool",
+  "kind": "atool",
   "description": "TODO: describe what this tool does",
   "author": "TODO",
   "license": "Apache-2.0",
   "config": {
-    "kind": "tool",
+    "kind": "atool",
     "binary": "bin/my-tool",
-    "default_port": 7800,
-    "transport": "http",
-    "args": []
+    "transport": "grpc",
+    "args": [],
+    "interface_major": 1
   },
   "files": [
     {

@@ -75,6 +75,58 @@ def test_tool_defaults_to_atool(tmp_path: Path) -> None:
     verify(out)
 
 
+def test_tool_credential_and_env_round_trip(tmp_path: Path) -> None:
+    bin_src = tmp_path / "gh"
+    bin_src.write_bytes(b"#!/bin/sh\nexit 0\n")
+
+    out = tmp_path / "github-0.1.0.atool"
+    (
+        Tool("acme/github", "0.1.0")
+        .description("GitHub tool with a declared credential")
+        .binary("bin/gh")
+        .credential(
+            "GITHUB_PERSONAL_ACCESS_TOKEN",
+            required=True,
+            description="GitHub PAT",
+        )
+        .env("GITHUB_HOST", default="github.com")
+        .stage_file(str(bin_src), "bin/gh", "tools/gh/bin/gh", executable=True)
+        .pack(out)
+    )
+
+    verified = verify(out)
+    cfg = verified["config"]
+    assert cfg["kind"] == "atool"
+    creds = cfg["credentials"]
+    assert len(creds) == 1
+    assert creds[0]["env"] == "GITHUB_PERSONAL_ACCESS_TOKEN"
+    assert creds[0]["required"] is True
+    assert creds[0]["secret"] is True  # defaults to true
+    assert creds[0]["rotation"] == "respawn"  # default rotation
+    assert creds[0]["description"] == "GitHub PAT"
+    envs = cfg["env"]
+    assert len(envs) == 1
+    assert envs[0]["name"] == "GITHUB_HOST"
+    assert envs[0]["default"] == "github.com"
+
+
+def test_credential_with_illegal_env_name_is_rejected() -> None:
+    manifest = {
+        "schema_version": "2",
+        "name": "acme/bad-cred",
+        "version": "0.1.0",
+        "kind": "atool",
+        "description": "atool with an illegal credential env name",
+        "config": {
+            "kind": "atool",
+            "binary": "bin/x",
+            "credentials": [{"env": "9-not-valid", "required": True}],
+        },
+    }
+    ok, errors = validate(manifest)
+    assert ok is False, "illegal env var name must be rejected"
+
+
 def test_tool_transport_http_retaxes_to_mcp(tmp_path: Path) -> None:
     bin_src = tmp_path / "mcptool"
     bin_src.write_bytes(b"#!/bin/sh\necho hi\n")

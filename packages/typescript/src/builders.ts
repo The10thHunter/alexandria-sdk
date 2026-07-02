@@ -4,8 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { pack } from "./pack.js";
 import { assertValid } from "./schema.js";
 import type {
-  AagentConfig, AtoolConfig, ComponentItem, Dependency, FileEntry, InlineComponent,
-  InstallFlatten, K8sResources, LockEntry, Manifest, McpConfig, PackageDep, Permissions,
+  AagentConfig, AtoolConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl, FileEntry,
+  InlineComponent, InstallFlatten, K8sResources, LockEntry, Manifest, McpConfig, PackageDep,
+  Permissions,
 } from "./types.js";
 
 abstract class Base<TConfig extends Manifest["config"]> {
@@ -111,6 +112,40 @@ export class Tool extends Base<McpConfig | AtoolConfig> {
   args(a: string[]): this { this.manifest.config.args = a; return this; }
   /** Contract/ABI major this tool exposes over its wire protocol (EE default 1). */
   interfaceMajor(n: number): this { this.manifest.config.interface_major = n; return this; }
+
+  /**
+   * Declare a secret credential this tool reads from an environment variable.
+   * No secret *value* is ever placed in the package — the operator binds the
+   * value into the deployment-shape secret backend at install time. `secret`
+   * defaults `true`, `rotation` defaults `"respawn"`.
+   */
+  credential(
+    env: string,
+    opts: { required?: boolean; secret?: boolean; description?: string; rotation?: "respawn" | "oauth-refresh" } = {},
+  ): this {
+    const c: CredentialDecl = {
+      env,
+      secret: opts.secret ?? true,
+      required: opts.required ?? false,
+      rotation: opts.rotation ?? "respawn",
+    };
+    if (opts.description) c.description = opts.description;
+    (this.manifest.config.credentials ??= []).push(c);
+    return this;
+  }
+
+  /**
+   * Declare a non-secret config environment variable this tool reads, with an
+   * optional literal `default`. Values are stored inline by the operator, not as
+   * a secret ref.
+   */
+  env(name: string, opts: { default?: string; required?: boolean } = {}): this {
+    const e: EnvDecl = { name };
+    if (opts.default !== undefined) e.default = opts.default;
+    if (opts.required) e.required = true;
+    (this.manifest.config.env ??= []).push(e);
+    return this;
+  }
   k8sImage(img: string): this { this.manifest.config.k8s_image = img; return this; }
   k8sCapabilities(c: string[]): this { this.manifest.config.k8s_capabilities = c; return this; }
   k8sPort(p: number): this { this.manifest.config.k8s_port = p; return this; }

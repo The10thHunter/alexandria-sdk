@@ -74,6 +74,55 @@ test("Tool builder stays atool when transport is grpc", () => {
   assert.equal(m.config.kind, "atool");
 });
 
+test("Tool credential + env declarations round-trip through pack/inspect", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sdk-"));
+  const src = join(dir, "src");
+  mkdirSync(join(src, "bin"), { recursive: true });
+  writeFileSync(join(src, "bin", "gh"), "#!/bin/sh\nexit 0\n");
+
+  const out = join(dir, "gh-0.1.0.atool");
+  await new Tool("acme/github", "0.1.0")
+    .description("GitHub tool with a declared credential")
+    .binary("bin/gh")
+    .credential("GITHUB_PERSONAL_ACCESS_TOKEN", { required: true, description: "GitHub PAT" })
+    .env("GITHUB_HOST", { default: "github.com" })
+    .file({ archive_path: "bin/gh", install_path: "tools/gh/bin/gh", executable: true })
+    .pack(out, { srcDir: src });
+
+  const r = await inspect(out);
+  assert.equal(r.manifest.kind, "atool");
+  if (r.manifest.config.kind === "atool") {
+    const creds = r.manifest.config.credentials!;
+    assert.equal(creds.length, 1);
+    assert.equal(creds[0].env, "GITHUB_PERSONAL_ACCESS_TOKEN");
+    assert.equal(creds[0].required, true);
+    assert.equal(creds[0].secret, true, "secret defaults to true");
+    assert.equal(creds[0].rotation, "respawn", "rotation defaults to respawn");
+    assert.equal(creds[0].description, "GitHub PAT");
+    const envs = r.manifest.config.env!;
+    assert.equal(envs.length, 1);
+    assert.equal(envs[0].name, "GITHUB_HOST");
+    assert.equal(envs[0].default, "github.com");
+  }
+});
+
+test("validation rejects a credential env var with an illegal name", () => {
+  const manifest = {
+    schema_version: "2",
+    name: "acme/bad-cred",
+    version: "0.1.0",
+    kind: "atool",
+    description: "atool with an illegal credential env name",
+    config: {
+      kind: "atool",
+      binary: "bin/x",
+      credentials: [{ env: "9-not-valid", required: true }],
+    },
+  };
+  const result = validate(manifest);
+  assert.equal(result.ok, false, "illegal env var name must be rejected");
+});
+
 test("Skill emits kind=aagent (prompt-only, no tags)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sdk-"));
   const out = join(dir, "skill-0.1.0.aagent");

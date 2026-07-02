@@ -232,6 +232,30 @@ func (t *Tool) Args(a []string) *Tool { t.cfg.Args = a; return t.sync() }
 // InterfaceMajor sets config.interface_major (contract/ABI major; EE default 1).
 func (t *Tool) InterfaceMajor(n int) *Tool { v := n; t.cfg.InterfaceMajor = &v; return t.sync() }
 
+// Credential declares a secret credential this tool reads from an environment
+// variable. No secret value is ever placed in the package — the operator binds
+// the value into the deployment-shape secret backend at install time. The EE
+// defaults are applied when unset: Secret defaults to true and Rotation defaults
+// to "respawn".
+func (t *Tool) Credential(c CredentialDecl) *Tool {
+	if c.Secret == nil {
+		c.Secret = BoolPtr(true)
+	}
+	if c.Rotation == "" {
+		c.Rotation = "respawn"
+	}
+	t.cfg.Credentials = append(t.cfg.Credentials, c)
+	return t.sync()
+}
+
+// EnvVar declares a non-secret config environment variable this tool reads, with
+// an optional literal Default. Values are stored inline by the operator, not as
+// a secret ref.
+func (t *Tool) EnvVar(e EnvDecl) *Tool {
+	t.cfg.Env = append(t.cfg.Env, e)
+	return t.sync()
+}
+
 // K8sImage sets config.k8s_image.
 func (t *Tool) K8sImage(img string) *Tool { t.cfg.K8sImage = img; return t.sync() }
 

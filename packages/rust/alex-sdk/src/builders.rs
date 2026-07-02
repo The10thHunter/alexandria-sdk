@@ -11,10 +11,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::manifest::{
-    AagentConfig, AtoolConfig, ComponentItem, Dependency, FileEntry, InlineComponent,
-    InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten, K8sHints, K8sResources, Kind,
-    LockEntry, Manifest, McpConfig, McpTransport, PackageConfig, PackageDep, Permissions,
-    PromptMode, RefComponent, WireTransport,
+    AagentConfig, AtoolConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl, FileEntry,
+    InlineComponent, InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten, K8sHints,
+    K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport, PackageConfig, PackageDep,
+    Permissions, PromptMode, RefComponent, WireTransport,
 };
 use crate::pack::{self, write_manifest};
 use crate::schema;
@@ -207,6 +207,8 @@ struct ToolFields {
     transport: Option<WireTransport>,
     args: Option<Vec<String>>,
     interface_major: Option<u32>,
+    credentials: Vec<CredentialDecl>,
+    env: Vec<EnvDecl>,
     k8s: K8sHints,
 }
 
@@ -233,6 +235,16 @@ impl Tool {
     /// Build the (kind, config) pair from the neutral field bag. Transport
     /// grpc/none => atool; http/sse => mcp.
     fn materialise(f: &ToolFields) -> (Kind, PackageConfig) {
+        let credentials = if f.credentials.is_empty() {
+            None
+        } else {
+            Some(f.credentials.clone())
+        };
+        let env = if f.env.is_empty() {
+            None
+        } else {
+            Some(f.env.clone())
+        };
         match f.transport {
             Some(WireTransport::Http) | Some(WireTransport::Sse) => {
                 let t = match f.transport {
@@ -246,6 +258,8 @@ impl Tool {
                     transport: t,
                     args: f.args.clone(),
                     interface_major: f.interface_major,
+                    credentials,
+                    env,
                     k8s: f.k8s.clone(),
                 };
                 (Kind::Mcp, PackageConfig::Mcp(cfg))
@@ -257,6 +271,8 @@ impl Tool {
                     transport: f.transport,
                     args: f.args.clone(),
                     interface_major: f.interface_major,
+                    credentials,
+                    env,
                     k8s: f.k8s.clone(),
                 };
                 (Kind::Atool, PackageConfig::Atool(cfg))
@@ -296,6 +312,24 @@ impl Tool {
     /// Contract/ABI major this tool exposes over its wire protocol (EE default 1).
     pub fn interface_major(mut self, n: u32) -> Self {
         self.fields.interface_major = Some(n);
+        self.rebuild();
+        self
+    }
+    /// Declare a secret credential this tool reads from an environment variable.
+    /// No secret *value* is ever placed in the package — the operator binds the
+    /// value into the deployment-shape secret backend at install time. Build the
+    /// decl with [`CredentialDecl::new`] (defaults `secret = true`,
+    /// `rotation = respawn`) and chain its setters.
+    pub fn credential(mut self, cred: CredentialDecl) -> Self {
+        self.fields.credentials.push(cred);
+        self.rebuild();
+        self
+    }
+    /// Declare a non-secret config environment variable this tool reads. Build
+    /// the decl with [`EnvDecl::new`] and chain its setters. Values are stored
+    /// inline by the operator, not as a secret ref.
+    pub fn env_var(mut self, env: EnvDecl) -> Self {
+        self.fields.env.push(env);
         self.rebuild();
         self
     }

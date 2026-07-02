@@ -180,6 +180,52 @@ class Tool(_Base):
         self._manifest["config"]["interface_major"] = n
         return self
 
+    def credential(
+        self,
+        env: str,
+        *,
+        required: bool = False,
+        secret: bool = True,
+        description: str | None = None,
+        rotation: str = "respawn",
+    ) -> "Tool":
+        """Declare a secret credential this tool reads from an environment variable.
+
+        No secret *value* is ever placed in the package — the operator binds the
+        value into the deployment-shape secret backend at install time. ``secret``
+        defaults ``True`` and ``rotation`` defaults ``"respawn"``.
+        """
+        cred: dict[str, Any] = {
+            "env": env,
+            "secret": secret,
+            "required": required,
+            "rotation": rotation,
+        }
+        if description:
+            cred["description"] = description
+        self._manifest["config"].setdefault("credentials", []).append(cred)
+        return self
+
+    def env(
+        self,
+        name: str,
+        *,
+        default: str | None = None,
+        required: bool = False,
+    ) -> "Tool":
+        """Declare a non-secret config environment variable this tool reads.
+
+        Values are stored inline by the operator (name -> value), not as a secret
+        ref. ``default`` is a literal applied when the operator does not override.
+        """
+        decl: dict[str, Any] = {"name": name}
+        if default is not None:
+            decl["default"] = default
+        if required:
+            decl["required"] = True
+        self._manifest["config"].setdefault("env", []).append(decl)
+        return self
+
     def k8s_image(self, img: str) -> "Tool":
         self._manifest["config"]["k8s_image"] = img
         return self

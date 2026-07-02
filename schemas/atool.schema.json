@@ -157,6 +157,42 @@
         "contract_hash": { "type": "string" }
       }
     },
+    "credentialDecl": {
+      "type": "object",
+      "description": "Author-time DECLARATION of a secret env var a spawnable tool reads. Never carries a secret value — the operator binds the value into the deployment-shape secret backend at install time; the DB row holds only a ref.",
+      "required": ["env"],
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Exact env var name THIS tool reads for the secret (POSIX-ish)."
+        },
+        "secret": { "type": "boolean", "default": true },
+        "required": { "type": "boolean", "default": false },
+        "description": { "type": "string" },
+        "rotation": {
+          "enum": ["respawn", "oauth-refresh"],
+          "default": "respawn",
+          "description": "How a rotated secret is re-injected. 'oauth-refresh' is declare-only for now."
+        }
+      }
+    },
+    "envDecl": {
+      "type": "object",
+      "description": "Author-time DECLARATION of a non-secret config env var. May carry a literal default; the operator-time binding stores its value inline (name -> value), not as a secret ref.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Env var name the tool reads (POSIX-ish)."
+        },
+        "default": { "type": "string" },
+        "required": { "type": "boolean", "default": false }
+      }
+    },
     "file": {
       "type": "object",
       "required": ["archive_path", "install_path"],
@@ -207,7 +243,17 @@
         "k8s_transport": { "enum": ["grpc", "http", "sse"] },
         "k8s_resources": { "$ref": "#/$defs/k8sResources" },
         "k8s_min_warm": { "type": "integer", "minimum": 0 },
-        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 }
+        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 },
+        "credentials": {
+          "type": "array",
+          "description": "Author-time credential declarations (secret env vars this tool reads). No secret values ever appear here.",
+          "items": { "$ref": "#/$defs/credentialDecl" }
+        },
+        "env": {
+          "type": "array",
+          "description": "Author-time non-secret config env declarations (name -> default).",
+          "items": { "$ref": "#/$defs/envDecl" }
+        }
       }
     },
     "atoolConfig": {
@@ -227,7 +273,17 @@
         "k8s_transport": { "enum": ["grpc", "http", "sse"] },
         "k8s_resources": { "$ref": "#/$defs/k8sResources" },
         "k8s_min_warm": { "type": "integer", "minimum": 0 },
-        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 }
+        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 },
+        "credentials": {
+          "type": "array",
+          "description": "Author-time credential declarations (secret env vars this tool reads). No secret values ever appear here.",
+          "items": { "$ref": "#/$defs/credentialDecl" }
+        },
+        "env": {
+          "type": "array",
+          "description": "Author-time non-secret config env declarations (name -> default).",
+          "items": { "$ref": "#/$defs/envDecl" }
+        }
       }
     },
     "aagentConfig": {

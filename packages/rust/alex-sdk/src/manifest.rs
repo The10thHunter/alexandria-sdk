@@ -172,6 +172,101 @@ pub struct K8sHints {
     pub k8s_idle_timeout_seconds: Option<u32>,
 }
 
+/// How a rotated secret is re-injected. `oauth-refresh` is DECLARE-ONLY for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Rotation {
+    Respawn,
+    OauthRefresh,
+}
+
+/// AUTHOR-TIME credential DECLARATION for a spawnable binary tool (`mcp`/`atool`).
+/// Declares the exact env var the tool reads for a secret and its rotation
+/// policy — it NEVER carries a secret value. The operator binds the value at
+/// install time into the deployment-shape secret backend (Quadlet = field-
+/// encrypted in Postgres; Helm = Vault or a native k8s Secret); the DB row holds
+/// only a REF. Additive — schema stays v2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialDecl {
+    /// Exact env var name THIS tool reads for the secret (ad-hoc per vendor).
+    pub env: String,
+    /// Whether this env var holds a secret value. Defaults to `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<bool>,
+    /// Whether the tool cannot spawn without this credential bound (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// Human-facing description of what the credential is (e.g. "GitHub PAT").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// How a rotated secret is re-injected. Defaults to `respawn`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<Rotation>,
+}
+
+impl CredentialDecl {
+    /// Construct a credential decl with the EE defaults: `secret = true`,
+    /// `required = false`, `rotation = respawn`.
+    pub fn new(env: impl Into<String>) -> Self {
+        Self {
+            env: env.into(),
+            secret: Some(true),
+            required: Some(false),
+            description: None,
+            rotation: Some(Rotation::Respawn),
+        }
+    }
+    pub fn required(mut self, v: bool) -> Self {
+        self.required = Some(v);
+        self
+    }
+    pub fn secret(mut self, v: bool) -> Self {
+        self.secret = Some(v);
+        self
+    }
+    pub fn description(mut self, d: impl Into<String>) -> Self {
+        self.description = Some(d.into());
+        self
+    }
+    pub fn rotation(mut self, r: Rotation) -> Self {
+        self.rotation = Some(r);
+        self
+    }
+}
+
+/// AUTHOR-TIME declaration of a **non-secret** config env var. May carry a
+/// literal `default`; the operator-time binding stores its value inline (name ->
+/// value), not as a secret ref. Additive — schema stays v2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvDecl {
+    /// Env var name the tool reads.
+    pub name: String,
+    /// Default literal value applied when the operator does not override it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Whether the operator must supply a value (no usable default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+}
+
+impl EnvDecl {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            default: None,
+            required: None,
+        }
+    }
+    pub fn default_value(mut self, d: impl Into<String>) -> Self {
+        self.default = Some(d.into());
+        self
+    }
+    pub fn required(mut self, v: bool) -> Self {
+        self.required = Some(v);
+        self
+    }
+}
+
 /// `kind = mcp` config — a binary daemon reached over the MCP protocol.
 /// `transport` is the MCP wire (http/sse).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +281,12 @@ pub struct McpConfig {
     /// Contract/ABI major this tool exposes. Defaults to 1 in EE.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface_major: Option<u32>,
+    /// Author-time secret credential declarations (no values ever stored here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<Vec<CredentialDecl>>,
+    /// Author-time non-secret config env declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<EnvDecl>>,
     #[serde(flatten)]
     pub k8s: K8sHints,
 }
@@ -212,6 +313,12 @@ pub struct AtoolConfig {
     /// Contract/ABI major this tool exposes. Defaults to 1 in EE.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface_major: Option<u32>,
+    /// Author-time secret credential declarations (no values ever stored here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<Vec<CredentialDecl>>,
+    /// Author-time non-secret config env declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<EnvDecl>>,
     #[serde(flatten)]
     pub k8s: K8sHints,
 }

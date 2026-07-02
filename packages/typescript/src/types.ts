@@ -55,6 +55,56 @@ export interface K8sResources {
   limits?: { cpu?: string; memory?: string };
 }
 
+/**
+ * AUTHOR-TIME credential DECLARATION for a spawnable binary tool (`mcp`/`atool`).
+ * Declares the exact env var the tool reads for a secret and how it rotates — it
+ * NEVER carries a secret value. A package/archive never contains secrets: the
+ * operator binds the value at install time into the deployment-shape secret
+ * backend (Quadlet = field-encrypted in Postgres; Helm = Vault or a native k8s
+ * Secret) and the DB row holds only a REF. Additive — schema stays v2.
+ */
+export interface CredentialDecl {
+  /** Exact env var name THIS tool reads for the secret (ad-hoc per vendor). */
+  env: string;
+  /** Whether this env var holds a secret value. Defaults to `true`. */
+  secret?: boolean;
+  /** Whether the tool cannot spawn without this credential bound (fail-closed). */
+  required?: boolean;
+  /** Human-facing description of what the credential is (e.g. "GitHub PAT"). */
+  description?: string;
+  /**
+   * How a rotated secret is re-injected: `"respawn"` (default) or
+   * `"oauth-refresh"` (DECLARE-ONLY for now; not yet implemented).
+   */
+  rotation?: "respawn" | "oauth-refresh";
+}
+
+/**
+ * AUTHOR-TIME declaration of a **non-secret** config env var for a spawnable
+ * binary tool. Unlike {@link CredentialDecl} it may carry a literal `default`
+ * and the operator-time binding stores its value inline (name -> value), not as
+ * a secret ref. Additive — schema stays v2.
+ */
+export interface EnvDecl {
+  /** Env var name the tool reads. */
+  name: string;
+  /** Default literal value applied when the operator does not override it. */
+  default?: string;
+  /** Whether the operator must supply a value (no usable default). */
+  required?: boolean;
+}
+
+/**
+ * Author-time credential/env declarations shared by both binary-tool configs
+ * (mcp + atool). No secret *values* ever live here.
+ */
+interface CredentialHints {
+  /** Secret env vars this tool reads; values bound by the operator at install. */
+  credentials?: CredentialDecl[];
+  /** Non-secret config env vars this tool reads (name -> default). */
+  env?: EnvDecl[];
+}
+
 /** k8s Helm-tier hints shared by both binary-tool configs (mcp + atool). */
 interface K8sHints {
   k8s_image?: string;
@@ -70,7 +120,7 @@ interface K8sHints {
  * `kind = mcp` config — a binary daemon reached over the MCP protocol.
  * Mirrors EE `McpConfig`; `transport` is the MCP wire (http/sse, default http).
  */
-export interface McpConfig extends K8sHints {
+export interface McpConfig extends K8sHints, CredentialHints {
   kind: "mcp";
   binary: string;
   default_port?: number;
@@ -84,7 +134,7 @@ export interface McpConfig extends K8sHints {
  * `kind = atool` config — a binary daemon reached over the native gRPC
  * `ToolService`. Mirrors EE `AtoolConfig`; `transport` defaults to "grpc".
  */
-export interface AtoolConfig extends K8sHints {
+export interface AtoolConfig extends K8sHints, CredentialHints {
   kind: "atool";
   binary: string;
   default_port?: number;

@@ -72,38 +72,75 @@ type K8sResources struct {
 	Limits   *K8sResourceLimits `json:"limits,omitempty"`
 }
 
+// CredentialDecl is an AUTHOR-TIME credential DECLARATION for a spawnable binary
+// tool (mcp/atool). It declares the exact env var the tool reads for a secret and
+// its rotation policy — it NEVER carries a secret value. The operator binds the
+// value at install time into the deployment-shape secret backend (Quadlet =
+// field-encrypted in Postgres; Helm = Vault or a native k8s Secret) and the DB
+// row holds only a REF. Additive — schema stays v2.
+type CredentialDecl struct {
+	// Env is the exact env var name THIS tool reads for the secret.
+	Env string `json:"env"`
+	// Secret marks the var as holding a secret value. Pointer so an explicit
+	// false is preserved; the builder defaults it to true.
+	Secret *bool `json:"secret,omitempty"`
+	// Required marks the tool as unable to spawn without this credential bound.
+	Required bool `json:"required,omitempty"`
+	// Description is a human-facing note (e.g. "GitHub PAT").
+	Description string `json:"description,omitempty"`
+	// Rotation is how a rotated secret is re-injected: "respawn" (default) or
+	// "oauth-refresh" (declare-only for now).
+	Rotation string `json:"rotation,omitempty"`
+}
+
+// EnvDecl is an AUTHOR-TIME declaration of a non-secret config env var. It may
+// carry a literal Default; the operator-time binding stores its value inline
+// (name -> value), not as a secret ref. Additive — schema stays v2.
+type EnvDecl struct {
+	// Name is the env var name the tool reads.
+	Name string `json:"name"`
+	// Default is the literal value applied when the operator does not override.
+	Default string `json:"default,omitempty"`
+	// Required marks that the operator must supply a value (no usable default).
+	Required bool `json:"required,omitempty"`
+}
+
 // McpConfig is the typed `config` block for kind=mcp (MCP JSON-RPC/SSE).
 type McpConfig struct {
-	Kind                  string        `json:"kind"`
-	Binary                string        `json:"binary"`
-	DefaultPort           *int          `json:"default_port,omitempty"`
-	Transport             string        `json:"transport,omitempty"`
-	Args                  []string      `json:"args,omitempty"`
-	InterfaceMajor        *int          `json:"interface_major,omitempty"`
-	K8sImage              string        `json:"k8s_image,omitempty"`
-	K8sCapabilities       []string      `json:"k8s_capabilities,omitempty"`
-	K8sPort               *int          `json:"k8s_port,omitempty"`
-	K8sTransport          string        `json:"k8s_transport,omitempty"`
-	K8sResources          *K8sResources `json:"k8s_resources,omitempty"`
-	K8sMinWarm            *int          `json:"k8s_min_warm,omitempty"`
-	K8sIdleTimeoutSeconds *int          `json:"k8s_idle_timeout_seconds,omitempty"`
+	Kind                  string           `json:"kind"`
+	Binary                string           `json:"binary"`
+	DefaultPort           *int             `json:"default_port,omitempty"`
+	Transport             string           `json:"transport,omitempty"`
+	Args                  []string         `json:"args,omitempty"`
+	InterfaceMajor        *int             `json:"interface_major,omitempty"`
+	K8sImage              string           `json:"k8s_image,omitempty"`
+	K8sCapabilities       []string         `json:"k8s_capabilities,omitempty"`
+	K8sPort               *int             `json:"k8s_port,omitempty"`
+	K8sTransport          string           `json:"k8s_transport,omitempty"`
+	K8sResources          *K8sResources    `json:"k8s_resources,omitempty"`
+	K8sMinWarm            *int             `json:"k8s_min_warm,omitempty"`
+	K8sIdleTimeoutSeconds *int             `json:"k8s_idle_timeout_seconds,omitempty"`
+	Credentials           []CredentialDecl `json:"credentials,omitempty"`
+	Env                   []EnvDecl        `json:"env,omitempty"`
 }
 
 // AtoolConfig is the typed `config` block for kind=atool (native gRPC).
 type AtoolConfig struct {
-	Kind                  string        `json:"kind"`
-	Binary                string        `json:"binary"`
-	DefaultPort           *int          `json:"default_port,omitempty"`
-	Transport             string        `json:"transport,omitempty"`
-	Args                  []string      `json:"args,omitempty"`
-	InterfaceMajor        *int          `json:"interface_major,omitempty"`
-	K8sImage              string        `json:"k8s_image,omitempty"`
-	K8sCapabilities       []string      `json:"k8s_capabilities,omitempty"`
-	K8sPort               *int          `json:"k8s_port,omitempty"`
-	K8sTransport          string        `json:"k8s_transport,omitempty"`
-	K8sResources          *K8sResources `json:"k8s_resources,omitempty"`
-	K8sMinWarm            *int          `json:"k8s_min_warm,omitempty"`
-	K8sIdleTimeoutSeconds *int          `json:"k8s_idle_timeout_seconds,omitempty"`
+	Kind                  string           `json:"kind"`
+	Binary                string           `json:"binary"`
+	DefaultPort           *int             `json:"default_port,omitempty"`
+	Transport             string           `json:"transport,omitempty"`
+	Args                  []string         `json:"args,omitempty"`
+	InterfaceMajor        *int             `json:"interface_major,omitempty"`
+	K8sImage              string           `json:"k8s_image,omitempty"`
+	K8sCapabilities       []string         `json:"k8s_capabilities,omitempty"`
+	K8sPort               *int             `json:"k8s_port,omitempty"`
+	K8sTransport          string           `json:"k8s_transport,omitempty"`
+	K8sResources          *K8sResources    `json:"k8s_resources,omitempty"`
+	K8sMinWarm            *int             `json:"k8s_min_warm,omitempty"`
+	K8sIdleTimeoutSeconds *int             `json:"k8s_idle_timeout_seconds,omitempty"`
+	Credentials           []CredentialDecl `json:"credentials,omitempty"`
+	Env                   []EnvDecl        `json:"env,omitempty"`
 }
 
 // AagentConfig is the typed `config` block for kind=aagent. A skill collapses
@@ -231,3 +268,7 @@ func (m *Manifest) AagentConfig() (*AagentConfig, error) {
 
 // IntPtr returns a pointer to v. Convenience for setting optional integer fields.
 func IntPtr(v int) *int { return &v }
+
+// BoolPtr returns a pointer to v. Convenience for setting optional boolean
+// fields (e.g. CredentialDecl.Secret).
+func BoolPtr(v bool) *bool { return &v }

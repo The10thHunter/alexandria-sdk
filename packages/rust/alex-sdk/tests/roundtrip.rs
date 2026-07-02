@@ -4,10 +4,11 @@
 use std::io::Write;
 
 use alex_sdk::manifest::{
-    ComponentItem, InstallFlatten, LockEntry, PackageConfig, PackageDep, PromptMode, WireTransport,
+    ComponentItem, CredentialDecl, EnvDecl, InstallFlatten, LockEntry, PackageConfig, PackageDep,
+    PromptMode, Rotation, WireTransport,
 };
 use alex_sdk::migrate::migrate_manifest;
-use alex_sdk::{verify, Agent, Skill, Tool};
+use alex_sdk::{validate, verify, Agent, Skill, Tool};
 
 #[test]
 fn agent_build_pack_verify_roundtrip() {
@@ -68,6 +69,71 @@ fn tool_defaults_to_atool_and_populates_sha256() {
     assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
 
     verify(&out).expect("verify");
+}
+
+#[test]
+fn tool_credential_and_env_round_trip() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bin_path = dir.path().join("gh-bin");
+    {
+        let mut f = std::fs::File::create(&bin_path).expect("create bin");
+        f.write_all(b"#!/bin/sh\nexit 0\n").expect("write bin");
+    }
+
+    let out = dir.path().join("github-0.1.0.atool");
+    Tool::new("acme/github", "0.1.0")
+        .description("GitHub tool with a declared credential")
+        .binary("bin/gh")
+        .credential(
+            CredentialDecl::new("GITHUB_PERSONAL_ACCESS_TOKEN")
+                .required(true)
+                .description("GitHub PAT"),
+        )
+        .env_var(EnvDecl::new("GITHUB_HOST").default_value("github.com"))
+        .stage_file(&bin_path, "bin/gh", "tools/gh/bin/gh", true)
+        .pack(&out)
+        .expect("pack");
+
+    let v = verify(&out).expect("verify");
+    if let PackageConfig::Atool(cfg) = &v.config {
+        let creds = cfg.credentials.as_ref().expect("credentials set");
+        assert_eq!(creds.len(), 1);
+        assert_eq!(creds[0].env, "GITHUB_PERSONAL_ACCESS_TOKEN");
+        assert_eq!(creds[0].required, Some(true));
+        assert_eq!(creds[0].secret, Some(true), "secret defaults to true");
+        assert_eq!(
+            creds[0].rotation,
+            Some(Rotation::Respawn),
+            "rotation defaults to respawn"
+        );
+        assert_eq!(creds[0].description.as_deref(), Some("GitHub PAT"));
+        let envs = cfg.env.as_ref().expect("env set");
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].name, "GITHUB_HOST");
+        assert_eq!(envs[0].default.as_deref(), Some("github.com"));
+    } else {
+        panic!("expected AtoolConfig");
+    }
+}
+
+#[test]
+fn credential_with_illegal_env_name_is_rejected() {
+    let manifest = serde_json::json!({
+        "schema_version": "2",
+        "name": "acme/bad-cred",
+        "version": "0.1.0",
+        "kind": "atool",
+        "description": "atool with an illegal credential env name",
+        "config": {
+            "kind": "atool",
+            "binary": "bin/x",
+            "credentials": [{ "env": "9-not-valid", "required": true }]
+        }
+    });
+    assert!(
+        validate(&manifest).is_err(),
+        "illegal env var name must be rejected"
+    );
 }
 
 #[test]

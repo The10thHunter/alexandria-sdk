@@ -23,10 +23,11 @@ pub mod schema;
 
 pub use builders::{Agent, Skill, Tool};
 pub use manifest::{
-    AagentConfig, AtoolConfig, ComponentItem, Dependency, FileEntry, InlineComponent,
-    InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten, K8sHints, K8sResourceSpec,
-    K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport, PackageConfig, PackageDep,
-    Permissions, PromptMode, RefComponent, SignatureBlock, ToolK8sTransport, WireTransport,
+    AagentConfig, AtoolConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl, FileEntry,
+    InlineComponent, InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten, K8sHints,
+    K8sResourceSpec, K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport,
+    PackageConfig, PackageDep, Permissions, PromptMode, RefComponent, Rotation, SignatureBlock,
+    ToolK8sTransport, WireTransport,
 };
 pub use migrate::{migrate_manifest, MigrateResult};
 pub use pack::{inspect, pack, verify, InspectResult, InspectedFile};

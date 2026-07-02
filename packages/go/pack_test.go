@@ -96,6 +96,76 @@ func TestToolDefaultsToAtool(t *testing.T) {
 	}
 }
 
+func TestToolCredentialAndEnvRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "gh-bin")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "github-0.1.0.atool")
+	tool := alexsdk.NewTool("acme/github", "0.1.0").
+		Description("GitHub tool with a declared credential").
+		Binary("bin/gh").
+		Credential(alexsdk.CredentialDecl{
+			Env:         "GITHUB_PERSONAL_ACCESS_TOKEN",
+			Required:    true,
+			Description: "GitHub PAT",
+		}).
+		EnvVar(alexsdk.EnvDecl{Name: "GITHUB_HOST", Default: "github.com"}).
+		StageFile(binPath, alexsdk.FileEntry{
+			ArchivePath: "bin/gh",
+			InstallPath: "tools/gh/bin/gh",
+			Executable:  true,
+		})
+
+	if _, err := tool.Pack(out); err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+
+	got, err := alexsdk.Verify(out)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	ac, err := got.AtoolConfig()
+	if err != nil {
+		t.Fatalf("AtoolConfig: %v", err)
+	}
+	if len(ac.Credentials) != 1 {
+		t.Fatalf("expected 1 credential, got %d", len(ac.Credentials))
+	}
+	c := ac.Credentials[0]
+	if c.Env != "GITHUB_PERSONAL_ACCESS_TOKEN" {
+		t.Fatalf("unexpected credential env %q", c.Env)
+	}
+	if !c.Required {
+		t.Fatal("expected credential required=true")
+	}
+	if c.Secret == nil || *c.Secret != true {
+		t.Fatalf("expected secret to default to true, got %v", c.Secret)
+	}
+	if c.Rotation != "respawn" {
+		t.Fatalf("expected rotation to default to respawn, got %q", c.Rotation)
+	}
+	if c.Description != "GitHub PAT" {
+		t.Fatalf("unexpected description %q", c.Description)
+	}
+	if len(ac.Env) != 1 || ac.Env[0].Name != "GITHUB_HOST" || ac.Env[0].Default != "github.com" {
+		t.Fatalf("unexpected env decls %+v", ac.Env)
+	}
+}
+
+func TestCredentialWithIllegalEnvNameIsRejected(t *testing.T) {
+	_, err := alexsdk.NewTool("acme/bad-cred", "0.1.0").
+		Description("atool with an illegal credential env name").
+		Binary("bin/x").
+		Credential(alexsdk.CredentialDecl{Env: "9-not-valid", Required: true}).
+		Build()
+	if err == nil {
+		t.Fatal("expected build to reject illegal credential env var name")
+	}
+}
+
 func TestToolTransportHTTPRetaxesToMcp(t *testing.T) {
 	tool := alexsdk.NewTool("acme/mcptool", "0.1.0").
 		Description("an mcp daemon").

@@ -17,14 +17,14 @@ const research = new Agent("acme/research-agent", "0.1.0")
   .description("Research assistant")
   .systemPrompt("You are a senior research assistant.")
   .allowedTools(["web-search", "pdf-parser"])
-  .llm("claude-opus-4-7")
+  .model("claude-opus-4-7")
   .historyLimit(100)
   .needsTools(["web-search", "pdf-parser"]);
 
 const writer = new Agent("acme/writer-agent", "0.1.0")
   .description("Writer agent")
   .systemPrompt("You are an editor. Tighten prose, preserve voice.")
-  .llm("claude-opus-4-7")
+  .model("claude-opus-4-7")
   .historyLimit(50);
 
 // Option A: Pack each agent individually + compose via refs in the collection manifest.

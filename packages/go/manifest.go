@@ -1,4 +1,13 @@
-// Package alexsdk authors and verifies Alexandria .atool / .aagent packages.
+// Package alexsdk authors and verifies Alexandria .atool / .aagent packages
+// (EE-canonical schema v2).
+//
+// Kinds mirror ee/crates/alex-package/src/manifest.rs:
+//
+//	mcp    — binary tool daemon over the MCP protocol (JSON-RPC/SSE)
+//	atool  — binary tool daemon over the native gRPC ToolService
+//	aagent — orchestrator-managed agent. A "skill" is reusable prompt text that
+//	         ships as an aagent whose content is its system_prompt — there is no
+//	         standalone skill kind.
 package alexsdk
 
 import (
@@ -11,9 +20,10 @@ type Kind string
 
 // Known package kinds. Keep in sync with atool.schema.json.
 const (
-	KindTool  Kind = "tool"
-	KindAgent Kind = "agent"
-	KindSkill Kind = "skill"
+	KindMcp    Kind = "mcp"
+	KindAtool  Kind = "atool"
+	KindAagent Kind = "aagent"
+	KindBundle Kind = "bundle"
 )
 
 // FileEntry is a declared file inside the package archive.
@@ -31,10 +41,24 @@ type Permissions struct {
 	SuggestedRole string   `json:"suggested_role,omitempty"`
 }
 
-// Dependency declares a required sibling package.
+// Dependency declares a required sibling package. Version is required.
 type Dependency struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+}
+
+// PackageDep is a base-package reference used by aagent Extends. Version is
+// optional (EE PackageDep has a serde default).
+type PackageDep struct {
+	Name    string `json:"name"`
+	Version string `json:"version,omitempty"`
+}
+
+// LockEntry is one resolved entry in an aagent's inheritance lockfile.
+type LockEntry struct {
+	Name           string `json:"name"`
+	InterfaceMajor int    `json:"interface_major"`
+	ContractHash   string `json:"contract_hash,omitempty"`
 }
 
 // K8sResourceLimits expresses cpu/memory under requests or limits.
@@ -49,51 +73,119 @@ type K8sResources struct {
 	Limits   *K8sResourceLimits `json:"limits,omitempty"`
 }
 
-// ToolConfig is the typed `config` block for kind=tool.
-type ToolConfig struct {
-	Kind                  string        `json:"kind"`
-	Binary                string        `json:"binary"`
-	DefaultPort           *int          `json:"default_port,omitempty"`
-	Transport             string        `json:"transport,omitempty"`
-	Args                  []string      `json:"args,omitempty"`
-	K8sImage              string        `json:"k8s_image,omitempty"`
-	K8sCapabilities       []string      `json:"k8s_capabilities,omitempty"`
-	K8sPort               *int          `json:"k8s_port,omitempty"`
-	K8sTransport          string        `json:"k8s_transport,omitempty"`
-	K8sResources          *K8sResources `json:"k8s_resources,omitempty"`
-	K8sMinWarm            *int          `json:"k8s_min_warm,omitempty"`
-	K8sIdleTimeoutSeconds *int          `json:"k8s_idle_timeout_seconds,omitempty"`
+// CredentialDecl is an AUTHOR-TIME credential DECLARATION for a spawnable binary
+// tool (mcp/atool). It declares the exact env var the tool reads for a secret and
+// its rotation policy — it NEVER carries a secret value. The operator binds the
+// value at install time into the deployment-shape secret backend (Quadlet =
+// field-encrypted in Postgres; Helm = Vault or a native k8s Secret) and the DB
+// row holds only a REF. Additive — schema stays v2.
+type CredentialDecl struct {
+	// Env is the exact env var name THIS tool reads for the secret.
+	Env string `json:"env"`
+	// Secret marks the var as holding a secret value. Pointer so an explicit
+	// false is preserved; the builder defaults it to true.
+	Secret *bool `json:"secret,omitempty"`
+	// Required marks the tool as unable to spawn without this credential bound.
+	Required bool `json:"required,omitempty"`
+	// Description is a human-facing note (e.g. "GitHub PAT").
+	Description string `json:"description,omitempty"`
+	// Rotation is how a rotated secret is re-injected: "respawn" (default) or
+	// "oauth-refresh" (declare-only for now).
+	Rotation string `json:"rotation,omitempty"`
 }
 
-// AgentConfig is the typed `config` block for kind=agent.
-type AgentConfig struct {
+// EnvDecl is an AUTHOR-TIME declaration of a non-secret config env var. It may
+// carry a literal Default; the operator-time binding stores its value inline
+// (name -> value), not as a secret ref. Additive — schema stays v2.
+type EnvDecl struct {
+	// Name is the env var name the tool reads.
+	Name string `json:"name"`
+	// Default is the literal value applied when the operator does not override.
+	Default string `json:"default,omitempty"`
+	// Required marks that the operator must supply a value (no usable default).
+	Required bool `json:"required,omitempty"`
+}
+
+// McpConfig is the typed `config` block for kind=mcp (MCP JSON-RPC/SSE).
+type McpConfig struct {
+	Kind                  string           `json:"kind"`
+	Binary                string           `json:"binary"`
+	DefaultPort           *int             `json:"default_port,omitempty"`
+	Transport             string           `json:"transport,omitempty"`
+	Args                  []string         `json:"args,omitempty"`
+	InterfaceMajor        *int             `json:"interface_major,omitempty"`
+	K8sImage              string           `json:"k8s_image,omitempty"`
+	K8sCapabilities       []string         `json:"k8s_capabilities,omitempty"`
+	K8sPort               *int             `json:"k8s_port,omitempty"`
+	K8sTransport          string           `json:"k8s_transport,omitempty"`
+	K8sResources          *K8sResources    `json:"k8s_resources,omitempty"`
+	K8sMinWarm            *int             `json:"k8s_min_warm,omitempty"`
+	K8sIdleTimeoutSeconds *int             `json:"k8s_idle_timeout_seconds,omitempty"`
+	Credentials           []CredentialDecl `json:"credentials,omitempty"`
+	Env                   []EnvDecl        `json:"env,omitempty"`
+}
+
+// AtoolConfig is the typed `config` block for kind=atool (native gRPC).
+//
+// A tool is EITHER coded (ships a Binary) OR code-less (binds a NativeHandler
+// and declares an InputSchema). Exactly one of {Binary, NativeHandler} must be
+// set — enforced by the product (ee/crates/alex-package) and, best-effort, the
+// schema. NativeHandler must name a handler in the product's closed set
+// (currently "emit_trigger").
+type AtoolConfig struct {
+	Kind                  string           `json:"kind"`
+	Binary                string           `json:"binary,omitempty"`
+	NativeHandler         string           `json:"native_handler,omitempty"`
+	InputSchema           json.RawMessage  `json:"input_schema,omitempty"`
+	DefaultPort           *int             `json:"default_port,omitempty"`
+	Transport             string           `json:"transport,omitempty"`
+	Args                  []string         `json:"args,omitempty"`
+	InterfaceMajor        *int             `json:"interface_major,omitempty"`
+	K8sImage              string           `json:"k8s_image,omitempty"`
+	K8sCapabilities       []string         `json:"k8s_capabilities,omitempty"`
+	K8sPort               *int             `json:"k8s_port,omitempty"`
+	K8sTransport          string           `json:"k8s_transport,omitempty"`
+	K8sResources          *K8sResources    `json:"k8s_resources,omitempty"`
+	K8sMinWarm            *int             `json:"k8s_min_warm,omitempty"`
+	K8sIdleTimeoutSeconds *int             `json:"k8s_idle_timeout_seconds,omitempty"`
+	Credentials           []CredentialDecl `json:"credentials,omitempty"`
+	Env                   []EnvDecl        `json:"env,omitempty"`
+}
+
+// AagentConfig is the typed `config` block for kind=aagent. A skill collapses
+// into this shape with only SystemPrompt populated — there is no Tags field.
+type AagentConfig struct {
 	Kind         string   `json:"kind"`
 	SystemPrompt string   `json:"system_prompt"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
-	// LLM is a freeform preferred LLM id. Replaces v1 Model.
-	LLM          string   `json:"llm,omitempty"`
-	HistoryLimit *int     `json:"history_limit,omitempty"`
+	// Model is the preferred model backend id (EE `model`). Replaces v1 Model/ModelHint.
+	Model        string `json:"model,omitempty"`
+	HistoryLimit *int   `json:"history_limit,omitempty"`
+	// PromptMode composes this prompt with Extends bases: "append" | "replace".
+	PromptMode string `json:"prompt_mode,omitempty"`
 }
 
-// SkillConfig is the typed `config` block for kind=skill.
-type SkillConfig struct {
-	Kind         string   `json:"kind"`
-	SystemPrompt string   `json:"system_prompt"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
-	// LLM is a freeform preferred LLM id. Replaces v1 ModelHint.
-	LLM          string   `json:"llm,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
+// BundleConfig is the typed `config` block for kind=bundle. A bundle is a
+// NON-callable named set of member tools (the unit a "role" like
+// doer/delegator/file-handler is made of). It ships no binary, no
+// native_handler, no input_schema, no model, no system_prompt — pure
+// composition. Its doctrine lives in the manifest top-level Description.
+// Tools must carry at least one member; each is a tool-name ref (optionally
+// name@major).
+type BundleConfig struct {
+	Kind  string   `json:"kind"`
+	Tools []string `json:"tools"`
 }
 
 // InstallFlatten defines merge rules for components at install time.
 type InstallFlatten struct {
 	SystemPrompt string `json:"system_prompt,omitempty"`
 	AllowedTools string `json:"allowed_tools,omitempty"`
-	LLM          string `json:"llm,omitempty"`
+	Model        string `json:"model,omitempty"`
 	HistoryLimit string `json:"history_limit,omitempty"`
 }
 
-// InstallBlock contains install-time options for agents with components.
+// InstallBlock contains install-time options for aagents with components.
 type InstallBlock struct {
 	Flatten *InstallFlatten `json:"flatten,omitempty"`
 }
@@ -106,10 +198,9 @@ type SignatureBlock struct {
 	Scope          string `json:"scope"`
 }
 
-// ComponentItem is a discriminated union: either an inline sub-component or
-// an external reference.
-// If Ref is non-empty, it is an external ref. Otherwise Name/ID/Kind/Config
-// describe an inline sub-agent or sub-skill.
+// ComponentItem is a discriminated union: either an inline sub-agent or an
+// external reference. If Ref is non-empty, it is an external ref. Otherwise
+// Name/ID/Kind/Config describe an inline sub-agent (always kind=aagent).
 type ComponentItem struct {
 	// Ref: external reference (ns/name@version). Non-empty means this is a ref.
 	Ref string `json:"ref,omitempty"`
@@ -127,23 +218,27 @@ type ComponentItem struct {
 
 // Manifest is the wire format for atool.json.
 type Manifest struct {
-	SchemaVersion      string          `json:"schema_version"`
-	Name               string          `json:"name"`
-	Version            string          `json:"version"`
-	Kind               Kind            `json:"kind"`
-	Description        string          `json:"description"`
-	Author             string          `json:"author,omitempty"`
-	License            string          `json:"license,omitempty"`
-	RequiresAlexandria string          `json:"requires_alexandria,omitempty"`
-	Dependencies       []Dependency    `json:"dependencies,omitempty"`
-	Files              []FileEntry     `json:"files,omitempty"`
-	Permissions        *Permissions    `json:"permissions,omitempty"`
-	Config             json.RawMessage `json:"config"`
-	// Components is only valid on kind=agent.
+	SchemaVersion      string       `json:"schema_version"`
+	Name               string       `json:"name"`
+	Version            string       `json:"version"`
+	Kind               Kind         `json:"kind"`
+	Description        string       `json:"description"`
+	Author             string       `json:"author,omitempty"`
+	License            string       `json:"license,omitempty"`
+	RequiresAlexandria string       `json:"requires_alexandria,omitempty"`
+	Dependencies       []Dependency `json:"dependencies,omitempty"`
+	// Extends lists base packages this aagent extends. aagent-only.
+	Extends []PackageDep `json:"extends,omitempty"`
+	// Lockfile is the resolved inheritance lockfile (aagent-only).
+	Lockfile    []LockEntry     `json:"lockfile,omitempty"`
+	Files       []FileEntry     `json:"files,omitempty"`
+	Permissions *Permissions    `json:"permissions,omitempty"`
+	Config      json.RawMessage `json:"config"`
+	// Components is only valid on kind=aagent.
 	Components []ComponentItem `json:"components,omitempty"`
-	// Install is only valid on agents with non-empty components.
+	// Install is only valid on aagents with non-empty components.
 	Install   *InstallBlock   `json:"install,omitempty"`
-	Signature *SignatureBlock  `json:"signature,omitempty"`
+	Signature *SignatureBlock `json:"signature,omitempty"`
 }
 
 // MarshalConfig serialises a typed config struct into a json.RawMessage suitable
@@ -156,41 +251,57 @@ func MarshalConfig(c any) (json.RawMessage, error) {
 	return b, nil
 }
 
-// ToolConfig decodes m.Config as a ToolConfig. Returns an error if Kind != tool.
-func (m *Manifest) ToolConfig() (*ToolConfig, error) {
-	if m.Kind != KindTool {
-		return nil, fmt.Errorf("manifest kind is %q, not tool", m.Kind)
+// McpConfig decodes m.Config as an McpConfig. Returns an error if Kind != mcp.
+func (m *Manifest) McpConfig() (*McpConfig, error) {
+	if m.Kind != KindMcp {
+		return nil, fmt.Errorf("manifest kind is %q, not mcp", m.Kind)
 	}
-	var c ToolConfig
+	var c McpConfig
 	if err := json.Unmarshal(m.Config, &c); err != nil {
-		return nil, fmt.Errorf("decode tool config: %w", err)
+		return nil, fmt.Errorf("decode mcp config: %w", err)
 	}
 	return &c, nil
 }
 
-// AgentConfig decodes m.Config as an AgentConfig. Returns an error if Kind != agent.
-func (m *Manifest) AgentConfig() (*AgentConfig, error) {
-	if m.Kind != KindAgent {
-		return nil, fmt.Errorf("manifest kind is %q, not agent", m.Kind)
+// AtoolConfig decodes m.Config as an AtoolConfig. Returns an error if Kind != atool.
+func (m *Manifest) AtoolConfig() (*AtoolConfig, error) {
+	if m.Kind != KindAtool {
+		return nil, fmt.Errorf("manifest kind is %q, not atool", m.Kind)
 	}
-	var c AgentConfig
+	var c AtoolConfig
 	if err := json.Unmarshal(m.Config, &c); err != nil {
-		return nil, fmt.Errorf("decode agent config: %w", err)
+		return nil, fmt.Errorf("decode atool config: %w", err)
 	}
 	return &c, nil
 }
 
-// SkillConfig decodes m.Config as a SkillConfig. Returns an error if Kind != skill.
-func (m *Manifest) SkillConfig() (*SkillConfig, error) {
-	if m.Kind != KindSkill {
-		return nil, fmt.Errorf("manifest kind is %q, not skill", m.Kind)
+// AagentConfig decodes m.Config as an AagentConfig. Returns an error if Kind != aagent.
+func (m *Manifest) AagentConfig() (*AagentConfig, error) {
+	if m.Kind != KindAagent {
+		return nil, fmt.Errorf("manifest kind is %q, not aagent", m.Kind)
 	}
-	var c SkillConfig
+	var c AagentConfig
 	if err := json.Unmarshal(m.Config, &c); err != nil {
-		return nil, fmt.Errorf("decode skill config: %w", err)
+		return nil, fmt.Errorf("decode aagent config: %w", err)
+	}
+	return &c, nil
+}
+
+// BundleConfig decodes m.Config as a BundleConfig. Returns an error if Kind != bundle.
+func (m *Manifest) BundleConfig() (*BundleConfig, error) {
+	if m.Kind != KindBundle {
+		return nil, fmt.Errorf("manifest kind is %q, not bundle", m.Kind)
+	}
+	var c BundleConfig
+	if err := json.Unmarshal(m.Config, &c); err != nil {
+		return nil, fmt.Errorf("decode bundle config: %w", err)
 	}
 	return &c, nil
 }
 
 // IntPtr returns a pointer to v. Convenience for setting optional integer fields.
 func IntPtr(v int) *int { return &v }
+
+// BoolPtr returns a pointer to v. Convenience for setting optional boolean
+// fields (e.g. CredentialDecl.Secret).
+func BoolPtr(v bool) *bool { return &v }

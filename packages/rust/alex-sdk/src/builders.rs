@@ -1,4 +1,4 @@
-//! Fluent builders mirroring the TypeScript SDK.
+//! Fluent builders mirroring the TypeScript SDK (EE-canonical schema v2).
 //!
 //! Each builder owns a [`Manifest`] plus a `Vec<(archive_path, src_path)>` of
 //! staged source files. `.pack(out)` materialises a tempdir, copies staged
@@ -11,9 +11,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::manifest::{
-    AgentConfig, ComponentItem, Dependency, FileEntry, InlineComponent, InlineComponentKind,
-    InlineConfig, InstallBlock, InstallFlatten, K8sResources, Kind, Manifest, PackageConfig,
-    Permissions, RefComponent, SkillConfig, ToolConfig, ToolK8sTransport, ToolTransport,
+    AagentConfig, AtoolConfig, BundleConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl,
+    FileEntry, InlineComponent, InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten,
+    K8sHints, K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport, PackageConfig,
+    PackageDep, Permissions, PromptMode, RefComponent, WireTransport,
 };
 use crate::pack::{self, write_manifest};
 use crate::schema;
@@ -27,7 +28,12 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(name: impl Into<String>, version: impl Into<String>, kind: Kind, config: PackageConfig) -> Self {
+    fn new(
+        name: impl Into<String>,
+        version: impl Into<String>,
+        kind: Kind,
+        config: PackageConfig,
+    ) -> Self {
         Self {
             manifest: Manifest {
                 schema_version: "2".to_string(),
@@ -39,6 +45,8 @@ impl Inner {
                 license: None,
                 requires_alexandria: None,
                 dependencies: None,
+                extends: None,
+                lockfile: None,
                 files: None,
                 permissions: None,
                 config,
@@ -51,7 +59,9 @@ impl Inner {
     }
 
     fn ensure_perms(&mut self) -> &mut Permissions {
-        self.manifest.permissions.get_or_insert_with(Permissions::default)
+        self.manifest
+            .permissions
+            .get_or_insert_with(Permissions::default)
     }
 
     fn build(&self) -> Result<Manifest> {
@@ -116,7 +126,11 @@ macro_rules! common_builder_methods {
         }
 
         pub fn file(mut self, f: FileEntry) -> Self {
-            self.inner.manifest.files.get_or_insert_with(Vec::new).push(f);
+            self.inner
+                .manifest
+                .files
+                .get_or_insert_with(Vec::new)
+                .push(f);
             self
         }
 
@@ -181,81 +195,201 @@ macro_rules! common_builder_methods {
 }
 
 // ---------------------------------------------------------------------------
-// Tool
+// Tool (kind = atool by default; kind = mcp when transport is http/sse)
 // ---------------------------------------------------------------------------
 
-/// Builder for `kind: tool` packages.
+/// Neutral field bag so the [`Tool`] builder can switch between mcp/atool
+/// config variants as the transport changes.
+#[derive(Default)]
+struct ToolFields {
+    binary: String,
+    native_handler: String,
+    input_schema: Option<serde_json::Value>,
+    default_port: Option<u16>,
+    transport: Option<WireTransport>,
+    args: Option<Vec<String>>,
+    interface_major: Option<u32>,
+    credentials: Vec<CredentialDecl>,
+    env: Vec<EnvDecl>,
+    k8s: K8sHints,
+}
+
+/// Builder for binary-tool packages.
+///
+/// Emits `kind = atool` (native gRPC `ToolService`) by default; calling
+/// `.transport(WireTransport::Http | Sse)` re-taxes the package to `kind = mcp`
+/// (MCP JSON-RPC/SSE). `.transport(WireTransport::Grpc)` keeps it an atool.
 pub struct Tool {
     inner: Inner,
+    fields: ToolFields,
 }
 
 impl Tool {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        let config = PackageConfig::Tool(ToolConfig {
-            binary: String::new(),
-            default_port: None,
-            transport: None,
-            args: None,
-            k8s_image: None,
-            k8s_capabilities: None,
-            k8s_port: None,
-            k8s_transport: None,
-            k8s_resources: None,
-            k8s_min_warm: None,
-            k8s_idle_timeout_seconds: None,
-        });
-        Self { inner: Inner::new(name, version, Kind::Tool, config) }
-    }
-
-    fn cfg(&mut self) -> &mut ToolConfig {
-        match &mut self.inner.manifest.config {
-            PackageConfig::Tool(c) => c,
-            _ => unreachable!("Tool builder always holds a ToolConfig"),
+        let fields = ToolFields::default();
+        let (kind, config) = Self::materialise(&fields);
+        Self {
+            inner: Inner::new(name, version, kind, config),
+            fields,
         }
     }
 
+    /// Build the (kind, config) pair from the neutral field bag. Transport
+    /// grpc/none => atool; http/sse => mcp.
+    fn materialise(f: &ToolFields) -> (Kind, PackageConfig) {
+        let credentials = if f.credentials.is_empty() {
+            None
+        } else {
+            Some(f.credentials.clone())
+        };
+        let env = if f.env.is_empty() {
+            None
+        } else {
+            Some(f.env.clone())
+        };
+        match f.transport {
+            Some(WireTransport::Http) | Some(WireTransport::Sse) => {
+                let t = match f.transport {
+                    Some(WireTransport::Http) => Some(McpTransport::Http),
+                    Some(WireTransport::Sse) => Some(McpTransport::Sse),
+                    _ => None,
+                };
+                let cfg = McpConfig {
+                    binary: f.binary.clone(),
+                    default_port: f.default_port,
+                    transport: t,
+                    args: f.args.clone(),
+                    interface_major: f.interface_major,
+                    credentials,
+                    env,
+                    k8s: f.k8s.clone(),
+                };
+                (Kind::Mcp, PackageConfig::Mcp(cfg))
+            }
+            _ => {
+                let cfg = AtoolConfig {
+                    binary: f.binary.clone(),
+                    native_handler: f.native_handler.clone(),
+                    input_schema: f.input_schema.clone(),
+                    default_port: f.default_port,
+                    transport: f.transport,
+                    args: f.args.clone(),
+                    interface_major: f.interface_major,
+                    credentials,
+                    env,
+                    k8s: f.k8s.clone(),
+                };
+                (Kind::Atool, PackageConfig::Atool(cfg))
+            }
+        }
+    }
+
+    /// Re-derive kind + config into the manifest after a field change.
+    fn rebuild(&mut self) {
+        let (kind, config) = Self::materialise(&self.fields);
+        self.inner.manifest.kind = kind;
+        self.inner.manifest.config = config;
+    }
+
     pub fn binary(mut self, p: impl Into<String>) -> Self {
-        self.cfg().binary = p.into();
+        self.fields.binary = p.into();
+        self.rebuild();
         self
     }
     pub fn port(mut self, p: u16) -> Self {
-        self.cfg().default_port = Some(p);
+        self.fields.default_port = Some(p);
+        self.rebuild();
         self
     }
-    pub fn transport(mut self, t: ToolTransport) -> Self {
-        self.cfg().transport = Some(t);
+    /// Pick the wire protocol — and thereby the package kind:
+    /// `Grpc` => kind atool; `Http`/`Sse` => kind mcp.
+    pub fn transport(mut self, t: WireTransport) -> Self {
+        self.fields.transport = Some(t);
+        self.rebuild();
         self
     }
     pub fn args(mut self, a: Vec<String>) -> Self {
-        self.cfg().args = Some(a);
+        self.fields.args = Some(a);
+        self.rebuild();
+        self
+    }
+    /// Contract/ABI major this tool exposes over its wire protocol (EE default 1).
+    pub fn interface_major(mut self, n: u32) -> Self {
+        self.fields.interface_major = Some(n);
+        self.rebuild();
+        self
+    }
+    /// Declare this as a **code-less** tool that binds to a native orchestrator
+    /// handler INSTEAD of shipping a binary (closed set, currently
+    /// `"emit_trigger"`). Clears any default-seeded binary. A code-less tool must
+    /// also declare its [`Self::input_schema`] — there is no daemon to advertise
+    /// it. (Only meaningful for an atool; the http/sse mcp taxonomy has no
+    /// native-handler concept.)
+    pub fn native_handler(mut self, name: impl Into<String>) -> Self {
+        self.fields.native_handler = name.into();
+        self.fields.binary = String::new();
+        self.rebuild();
+        self
+    }
+    /// Declare the tool's full input contract as an embedded JSON Schema.
+    /// Required for a code-less tool ([`Self::native_handler`]); optional static
+    /// fallback for a coded tool.
+    pub fn input_schema(mut self, schema: serde_json::Value) -> Self {
+        self.fields.input_schema = Some(schema);
+        self.rebuild();
+        self
+    }
+    /// Declare a secret credential this tool reads from an environment variable.
+    /// No secret *value* is ever placed in the package — the operator binds the
+    /// value into the deployment-shape secret backend at install time. Build the
+    /// decl with [`CredentialDecl::new`] (defaults `secret = true`,
+    /// `rotation = respawn`) and chain its setters.
+    pub fn credential(mut self, cred: CredentialDecl) -> Self {
+        self.fields.credentials.push(cred);
+        self.rebuild();
+        self
+    }
+    /// Declare a non-secret config environment variable this tool reads. Build
+    /// the decl with [`EnvDecl::new`] and chain its setters. Values are stored
+    /// inline by the operator, not as a secret ref.
+    pub fn env_var(mut self, env: EnvDecl) -> Self {
+        self.fields.env.push(env);
+        self.rebuild();
         self
     }
     pub fn k8s_image(mut self, img: impl Into<String>) -> Self {
-        self.cfg().k8s_image = Some(img.into());
+        self.fields.k8s.k8s_image = Some(img.into());
+        self.rebuild();
         self
     }
     pub fn k8s_capabilities(mut self, c: Vec<String>) -> Self {
-        self.cfg().k8s_capabilities = Some(c);
+        self.fields.k8s.k8s_capabilities = Some(c);
+        self.rebuild();
         self
     }
     pub fn k8s_port(mut self, p: u16) -> Self {
-        self.cfg().k8s_port = Some(p);
+        self.fields.k8s.k8s_port = Some(p);
+        self.rebuild();
         self
     }
-    pub fn k8s_transport(mut self, t: ToolK8sTransport) -> Self {
-        self.cfg().k8s_transport = Some(t);
+    pub fn k8s_transport(mut self, t: crate::manifest::ToolK8sTransport) -> Self {
+        self.fields.k8s.k8s_transport = Some(t);
+        self.rebuild();
         self
     }
     pub fn k8s_resources(mut self, r: K8sResources) -> Self {
-        self.cfg().k8s_resources = Some(r);
+        self.fields.k8s.k8s_resources = Some(r);
+        self.rebuild();
         self
     }
     pub fn k8s_min_warm(mut self, n: u32) -> Self {
-        self.cfg().k8s_min_warm = Some(n);
+        self.fields.k8s.k8s_min_warm = Some(n);
+        self.rebuild();
         self
     }
     pub fn k8s_idle_timeout(mut self, seconds: u32) -> Self {
-        self.cfg().k8s_idle_timeout_seconds = Some(seconds);
+        self.fields.k8s.k8s_idle_timeout_seconds = Some(seconds);
+        self.rebuild();
         self
     }
 
@@ -263,29 +397,32 @@ impl Tool {
 }
 
 // ---------------------------------------------------------------------------
-// Agent
+// Agent (kind = aagent)
 // ---------------------------------------------------------------------------
 
-/// Builder for `kind: agent` packages.
+/// Builder for `kind: aagent` packages.
 pub struct Agent {
     inner: Inner,
 }
 
 impl Agent {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        let config = PackageConfig::Agent(AgentConfig {
+        let config = PackageConfig::Aagent(AagentConfig {
             system_prompt: String::new(),
             allowed_tools: None,
-            llm: None,
+            model: None,
             history_limit: None,
+            prompt_mode: None,
         });
-        Self { inner: Inner::new(name, version, Kind::Agent, config) }
+        Self {
+            inner: Inner::new(name, version, Kind::Aagent, config),
+        }
     }
 
-    fn cfg(&mut self) -> &mut AgentConfig {
+    fn cfg(&mut self) -> &mut AagentConfig {
         match &mut self.inner.manifest.config {
-            PackageConfig::Agent(c) => c,
-            _ => unreachable!("Agent builder always holds an AgentConfig"),
+            PackageConfig::Aagent(c) => c,
+            _ => unreachable!("Agent builder always holds an AagentConfig"),
         }
     }
 
@@ -305,9 +442,9 @@ impl Agent {
         self
     }
 
-    /// Set config.llm (replaces v1 `.model()`). Freeform preferred LLM id.
-    pub fn llm(mut self, m: impl Into<String>) -> Self {
-        self.cfg().llm = Some(m.into());
+    /// Preferred model backend id (EE `config.model`). Replaces v1 `.llm()`.
+    pub fn model(mut self, m: impl Into<String>) -> Self {
+        self.cfg().model = Some(m.into());
         self
     }
 
@@ -316,18 +453,78 @@ impl Agent {
         self
     }
 
+    /// Prompt composition mode against `extends` bases: append (default) | replace.
+    pub fn prompt_mode(mut self, m: PromptMode) -> Self {
+        self.cfg().prompt_mode = Some(m);
+        self
+    }
+
+    /// Append a base package this aagent extends. aagent-only in EE.
+    pub fn extend(mut self, base: PackageDep) -> Self {
+        self.inner
+            .manifest
+            .extends
+            .get_or_insert_with(Vec::new)
+            .push(base);
+        self
+    }
+
+    pub fn extends_packages(mut self, bases: Vec<PackageDep>) -> Self {
+        self.inner.manifest.extends = Some(bases);
+        self
+    }
+
+    /// Append a resolved inheritance lockfile entry (aagent-only).
+    pub fn lock(mut self, entry: LockEntry) -> Self {
+        self.inner
+            .manifest
+            .lockfile
+            .get_or_insert_with(Vec::new)
+            .push(entry);
+        self
+    }
+
+    pub fn lockfile(mut self, entries: Vec<LockEntry>) -> Self {
+        self.inner.manifest.lockfile = Some(entries);
+        self
+    }
+
     /// Append an inline sub-agent to components[].
     /// `name` is the local label; `id` is the canonical ns/name@version.
-    pub fn component(mut self, name: impl Into<String>, id: impl Into<String>, child: Agent) -> Result<Self> {
+    pub fn component(
+        mut self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        child: Agent,
+    ) -> Result<Self> {
         let child_manifest = child.build()?;
+        self.push_inline(name.into(), id.into(), child_manifest);
+        Ok(self)
+    }
+
+    /// Append an inline sub-skill to components[] (also emits kind=aagent).
+    pub fn component_skill(
+        mut self,
+        name: impl Into<String>,
+        id: impl Into<String>,
+        child: Skill,
+    ) -> Result<Self> {
+        let child_manifest = child.build()?;
+        self.push_inline(name.into(), id.into(), child_manifest);
+        Ok(self)
+    }
+
+    /// Shared inline-component push. Both Agent and Skill children carry an
+    /// AagentConfig, so the inline kind is always aagent.
+    fn push_inline(&mut self, name: String, id: String, child_manifest: Manifest) {
         let child_cfg = match child_manifest.config {
-            PackageConfig::Agent(c) => InlineConfig::Agent(c),
-            _ => unreachable!("Agent child always has AgentConfig"),
+            PackageConfig::Aagent(c) => InlineConfig::Aagent(c),
+            _ => unreachable!("aagent/skill child always has AagentConfig"),
         };
         let inline = InlineComponent {
-            name: name.into(),
-            id: id.into(),
-            kind: InlineComponentKind::Agent,
+            name,
+            id,
+            kind: InlineComponentKind::Aagent,
             config: child_cfg,
             components: child_manifest.components,
             files: child_manifest.files,
@@ -339,41 +536,17 @@ impl Agent {
             .components
             .get_or_insert_with(Vec::new)
             .push(ComponentItem::Inline(inline));
-        Ok(self)
     }
 
-    /// Append an inline sub-skill to components[].
-    pub fn component_skill(mut self, name: impl Into<String>, id: impl Into<String>, child: Skill) -> Result<Self> {
-        let child_manifest = child.build()?;
-        let child_cfg = match child_manifest.config {
-            PackageConfig::Skill(c) => InlineConfig::Skill(c),
-            _ => unreachable!("Skill child always has SkillConfig"),
-        };
-        let inline = InlineComponent {
-            name: name.into(),
-            id: id.into(),
-            kind: InlineComponentKind::Skill,
-            config: child_cfg,
-            components: None,
-            files: child_manifest.files,
-            permissions: child_manifest.permissions,
-            dependencies: child_manifest.dependencies,
-        };
-        self.inner
-            .manifest
-            .components
-            .get_or_insert_with(Vec::new)
-            .push(ComponentItem::Inline(inline));
-        Ok(self)
-    }
-
-    /// Append an external ref component (any kind: tool, skill, or agent).
+    /// Append an external ref component (any kind: mcp/atool tool, or aagent).
     pub fn ref_component(mut self, ns_name_at_version: impl Into<String>) -> Self {
         self.inner
             .manifest
             .components
             .get_or_insert_with(Vec::new)
-            .push(ComponentItem::Ref(RefComponent { ref_target: ns_name_at_version.into() }));
+            .push(ComponentItem::Ref(RefComponent {
+                ref_target: ns_name_at_version.into(),
+            }));
         self
     }
 
@@ -391,29 +564,34 @@ impl Agent {
 }
 
 // ---------------------------------------------------------------------------
-// Skill
+// Skill (a prompt-only aagent)
 // ---------------------------------------------------------------------------
 
-/// Builder for `kind: skill` packages.
+/// Builder for reusable-prompt "skill" packages. A skill is reusable prompt
+/// text — EE has no standalone skill kind, so this emits `kind = aagent` whose
+/// only content is `system_prompt`.
 pub struct Skill {
     inner: Inner,
 }
 
 impl Skill {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
-        let config = PackageConfig::Skill(SkillConfig {
+        let config = PackageConfig::Aagent(AagentConfig {
             system_prompt: String::new(),
             allowed_tools: None,
-            llm: None,
-            tags: None,
+            model: None,
+            history_limit: None,
+            prompt_mode: None,
         });
-        Self { inner: Inner::new(name, version, Kind::Skill, config) }
+        Self {
+            inner: Inner::new(name, version, Kind::Aagent, config),
+        }
     }
 
-    fn cfg(&mut self) -> &mut SkillConfig {
+    fn cfg(&mut self) -> &mut AagentConfig {
         match &mut self.inner.manifest.config {
-            PackageConfig::Skill(c) => c,
-            _ => unreachable!("Skill builder always holds a SkillConfig"),
+            PackageConfig::Aagent(c) => c,
+            _ => unreachable!("Skill builder always holds an AagentConfig"),
         }
     }
 
@@ -422,19 +600,63 @@ impl Skill {
         self
     }
 
+    pub fn system_prompt_from_file(mut self, path: impl AsRef<Path>) -> Result<Self> {
+        let s = std::fs::read_to_string(path.as_ref())?;
+        self.cfg().system_prompt = s;
+        Ok(self)
+    }
+
     pub fn allowed_tools(mut self, t: Vec<String>) -> Self {
         self.cfg().allowed_tools = Some(t);
         self
     }
 
-    /// Set config.llm (replaces v1 `.model_hint()`). Freeform preferred LLM id.
-    pub fn llm(mut self, m: impl Into<String>) -> Self {
-        self.cfg().llm = Some(m.into());
+    /// Preferred model backend id (EE `config.model`). Replaces v1 `.model_hint()`.
+    pub fn model(mut self, m: impl Into<String>) -> Self {
+        self.cfg().model = Some(m.into());
         self
     }
 
-    pub fn tags(mut self, t: Vec<String>) -> Self {
-        self.cfg().tags = Some(t);
+    common_builder_methods!();
+}
+
+// ---------------------------------------------------------------------------
+// Bundle (kind = bundle)
+// ---------------------------------------------------------------------------
+
+/// Builder for `kind: bundle` packages. A bundle is a NON-callable named set of
+/// member tools — the unit a "role" (doer/delegator/file-handler) is made of. It
+/// ships no binary, no native_handler, no input_schema, no model, no
+/// system_prompt; it is pure composition. Its doctrine/"skill" (the stance)
+/// lives in the top-level `.description(...)`.
+pub struct Bundle {
+    inner: Inner,
+}
+
+impl Bundle {
+    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        let config = PackageConfig::Bundle(BundleConfig { tools: Vec::new() });
+        Self {
+            inner: Inner::new(name, version, Kind::Bundle, config),
+        }
+    }
+
+    fn cfg(&mut self) -> &mut BundleConfig {
+        match &mut self.inner.manifest.config {
+            PackageConfig::Bundle(c) => c,
+            _ => unreachable!("Bundle builder always holds a BundleConfig"),
+        }
+    }
+
+    /// Append one member tool reference (optionally `name@major`).
+    pub fn tool(mut self, ref_: impl Into<String>) -> Self {
+        self.cfg().tools.push(ref_.into());
+        self
+    }
+
+    /// Replace the member tool list. At least one is required by the schema.
+    pub fn tools(mut self, refs: Vec<String>) -> Self {
+        self.cfg().tools = refs;
         self
     }
 

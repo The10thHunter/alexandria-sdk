@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/The10thHunter/alexandria-sdk/main/schemas/atool.schema.json",
   "title": "Alexandria atool manifest",
-  "description": "Manifest for .atool and .aagent packages. Source of truth across all SDKs and the LSP.",
+  "description": "Manifest for .atool and .aagent packages (EE-canonical schema v2). Source of truth across all SDKs and the LSP. Kinds and field names mirror ee/crates/alex-package/src/manifest.rs.",
   "type": "object",
   "required": ["schema_version", "name", "version", "kind", "description", "config"],
   "additionalProperties": false,
@@ -19,7 +19,7 @@
       "description": "SemVer."
     },
     "kind": {
-      "enum": ["tool", "skill", "agent"]
+      "enum": ["mcp", "atool", "aagent", "bundle"]
     },
     "description": { "type": "string", "minLength": 1 },
     "author": { "type": "string" },
@@ -27,15 +27,17 @@
     "requires_alexandria": { "type": "string" },
     "dependencies": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["name", "version"],
-        "additionalProperties": false,
-        "properties": {
-          "name": { "type": "string" },
-          "version": { "type": "string" }
-        }
-      }
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "extends": {
+      "type": "array",
+      "description": "Base packages this aagent extends. aagent-only.",
+      "items": { "$ref": "#/$defs/packageDep" }
+    },
+    "lockfile": {
+      "type": "array",
+      "description": "Resolved inheritance lockfile (aagent-only).",
+      "items": { "$ref": "#/$defs/lockEntry" }
     },
     "files": {
       "type": "array",
@@ -52,9 +54,10 @@
     },
     "config": {
       "oneOf": [
-        { "$ref": "#/$defs/toolConfig" },
-        { "$ref": "#/$defs/agentConfig" },
-        { "$ref": "#/$defs/skillConfig" }
+        { "$ref": "#/$defs/mcpConfig" },
+        { "$ref": "#/$defs/atoolConfig" },
+        { "$ref": "#/$defs/aagentConfig" },
+        { "$ref": "#/$defs/bundleConfig" }
       ]
     },
     "components": {
@@ -71,7 +74,7 @@
           "properties": {
             "system_prompt": { "enum": ["concat", "root_wins", "error_on_conflict"] },
             "allowed_tools": { "enum": ["union", "root_wins"] },
-            "llm": { "const": "root_wins" },
+            "model": { "const": "root_wins" },
             "history_limit": { "const": "root_wins" }
           }
         }
@@ -92,35 +95,118 @@
   "allOf": [
     {
       "if": {
-        "properties": { "kind": { "const": "tool" } },
+        "properties": { "kind": { "const": "mcp" } },
         "required": ["kind"]
       },
       "then": {
-        "properties": { "config": { "$ref": "#/$defs/toolConfig" } },
+        "properties": {
+          "config": { "$ref": "#/$defs/mcpConfig" },
+          "extends": { "maxItems": 0 }
+        },
         "not": { "required": ["components"] }
       }
     },
     {
       "if": {
-        "properties": { "kind": { "const": "skill" } },
+        "properties": { "kind": { "const": "atool" } },
         "required": ["kind"]
       },
       "then": {
-        "properties": { "config": { "$ref": "#/$defs/skillConfig" } },
+        "properties": {
+          "config": { "$ref": "#/$defs/atoolConfig" },
+          "extends": { "maxItems": 0 }
+        },
         "not": { "required": ["components"] }
       }
     },
     {
       "if": {
-        "properties": { "kind": { "const": "agent" } },
+        "properties": { "kind": { "const": "aagent" } },
         "required": ["kind"]
       },
       "then": {
-        "properties": { "config": { "$ref": "#/$defs/agentConfig" } }
+        "properties": { "config": { "$ref": "#/$defs/aagentConfig" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "bundle" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": {
+          "config": { "$ref": "#/$defs/bundleConfig" },
+          "extends": { "maxItems": 0 }
+        },
+        "not": { "required": ["components"] }
       }
     }
   ],
   "$defs": {
+    "dependency": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    },
+    "packageDep": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string" }
+      }
+    },
+    "lockEntry": {
+      "type": "object",
+      "required": ["name", "interface_major"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "interface_major": { "type": "integer", "minimum": 0 },
+        "contract_hash": { "type": "string" }
+      }
+    },
+    "credentialDecl": {
+      "type": "object",
+      "description": "Author-time DECLARATION of a secret env var a spawnable tool reads. Never carries a secret value — the operator binds the value into the deployment-shape secret backend at install time; the DB row holds only a ref.",
+      "required": ["env"],
+      "additionalProperties": false,
+      "properties": {
+        "env": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Exact env var name THIS tool reads for the secret (POSIX-ish)."
+        },
+        "secret": { "type": "boolean", "default": true },
+        "required": { "type": "boolean", "default": false },
+        "description": { "type": "string" },
+        "rotation": {
+          "enum": ["respawn", "oauth-refresh"],
+          "default": "respawn",
+          "description": "How a rotated secret is re-injected. 'oauth-refresh' is declare-only for now."
+        }
+      }
+    },
+    "envDecl": {
+      "type": "object",
+      "description": "Author-time DECLARATION of a non-secret config env var. May carry a literal default; the operator-time binding stores its value inline (name -> value), not as a secret ref.",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Env var name the tool reads (POSIX-ish)."
+        },
+        "default": { "type": "string" },
+        "required": { "type": "boolean", "default": false }
+      }
+    },
     "file": {
       "type": "object",
       "required": ["archive_path", "install_path"],
@@ -154,47 +240,113 @@
         }
       }
     },
-    "toolConfig": {
+    "mcpConfig": {
       "type": "object",
       "required": ["kind", "binary"],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "tool" },
+        "kind": { "const": "mcp" },
         "binary": { "type": "string", "minLength": 1 },
-        "default_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "default_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "transport": { "enum": ["http", "sse"] },
         "args": { "type": "array", "items": { "type": "string" } },
+        "interface_major": { "type": "integer", "minimum": 1 },
         "k8s_image": { "type": "string" },
         "k8s_capabilities": { "type": "array", "items": { "type": "string" } },
         "k8s_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "k8s_transport": { "enum": ["grpc", "http", "sse"] },
         "k8s_resources": { "$ref": "#/$defs/k8sResources" },
         "k8s_min_warm": { "type": "integer", "minimum": 0 },
-        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 }
+        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 },
+        "credentials": {
+          "type": "array",
+          "description": "Author-time credential declarations (secret env vars this tool reads). No secret values ever appear here.",
+          "items": { "$ref": "#/$defs/credentialDecl" }
+        },
+        "env": {
+          "type": "array",
+          "description": "Author-time non-secret config env declarations (name -> default).",
+          "items": { "$ref": "#/$defs/envDecl" }
+        }
       }
     },
-    "agentConfig": {
+    "atoolConfig": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "$comment": "A tool is EITHER coded (ships a `binary`) OR code-less (binds a `native_handler` + declares an `input_schema`). Exactly one of {binary, native_handler} must be set — enforced by the `oneOf` below and, authoritatively, by the product (ee/crates/alex-package). The closed native-handler set (currently [\"emit_trigger\"]) is enforced by the product, not repeated here. `binary`/`native_handler` carry no property-level minLength so that EE serde output (which serialises the unset side as an empty string) still validates; the non-empty requirement lives in the oneOf branches.",
+      "properties": {
+        "kind": { "const": "atool" },
+        "binary": { "type": "string" },
+        "native_handler": {
+          "type": "string",
+          "description": "Code-less tool: name of the native orchestrator handler this tool binds to (closed set, e.g. \"emit_trigger\"). Set INSTEAD of `binary`."
+        },
+        "input_schema": {
+          "type": "object",
+          "description": "Full JSON Schema for the tool's input contract. Required for a code-less tool (no daemon to advertise it); optional static fallback for a coded tool."
+        },
+        "default_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "transport": { "enum": ["grpc", "http", "sse"] },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "interface_major": { "type": "integer", "minimum": 1 },
+        "k8s_image": { "type": "string" },
+        "k8s_capabilities": { "type": "array", "items": { "type": "string" } },
+        "k8s_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "k8s_transport": { "enum": ["grpc", "http", "sse"] },
+        "k8s_resources": { "$ref": "#/$defs/k8sResources" },
+        "k8s_min_warm": { "type": "integer", "minimum": 0 },
+        "k8s_idle_timeout_seconds": { "type": "integer", "minimum": 0 },
+        "credentials": {
+          "type": "array",
+          "description": "Author-time credential declarations (secret env vars this tool reads). No secret values ever appear here.",
+          "items": { "$ref": "#/$defs/credentialDecl" }
+        },
+        "env": {
+          "type": "array",
+          "description": "Author-time non-secret config env declarations (name -> default).",
+          "items": { "$ref": "#/$defs/envDecl" }
+        }
+      },
+      "oneOf": [
+        {
+          "title": "coded tool (ships a binary)",
+          "required": ["binary"],
+          "properties": { "binary": { "minLength": 1 } }
+        },
+        {
+          "title": "code-less tool (binds a native handler)",
+          "required": ["native_handler", "input_schema"],
+          "properties": { "native_handler": { "minLength": 1 } }
+        }
+      ]
+    },
+    "aagentConfig": {
       "type": "object",
       "required": ["kind", "system_prompt"],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "agent" },
+        "kind": { "const": "aagent" },
         "system_prompt": { "type": "string", "minLength": 1 },
         "allowed_tools": { "type": "array", "items": { "type": "string" } },
-        "llm": { "type": "string" },
-        "history_limit": { "type": "integer", "minimum": 1 }
+        "model": { "type": "string" },
+        "history_limit": { "type": "integer", "minimum": 1 },
+        "prompt_mode": { "enum": ["append", "replace"] }
       }
     },
-    "skillConfig": {
+    "bundleConfig": {
       "type": "object",
-      "required": ["kind", "system_prompt"],
       "additionalProperties": false,
+      "required": ["kind", "tools"],
+      "$comment": "A bundle is a NON-callable named set of member tools (the unit a role like doer/delegator/file-handler is made of). It ships no binary, no native_handler, no input_schema, no model, no system_prompt — pure composition. Its doctrine lives in the manifest top-level `description`. Mirrors ee/crates/alex-package BundleConfig.",
       "properties": {
-        "kind": { "const": "skill" },
-        "system_prompt": { "type": "string", "minLength": 1 },
-        "allowed_tools": { "type": "array", "items": { "type": "string" } },
-        "llm": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } }
+        "kind": { "const": "bundle" },
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Member tool-name references (each optionally name@major). At least one — a bundle grouping nothing has no identity."
+        }
       }
     },
     "componentItem": {
@@ -218,13 +370,8 @@
               "pattern": "^([a-z0-9][a-z0-9_-]*/)?[a-z0-9][a-z0-9_-]*@\\d+\\.\\d+\\.\\d+",
               "description": "Canonical ns/name@version used for coalescing."
             },
-            "kind": { "enum": ["agent", "skill"] },
-            "config": {
-              "oneOf": [
-                { "$ref": "#/$defs/agentConfig" },
-                { "$ref": "#/$defs/skillConfig" }
-              ]
-            },
+            "kind": { "const": "aagent" },
+            "config": { "$ref": "#/$defs/aagentConfig" },
             "components": {
               "type": "array",
               "items": { "$ref": "#/$defs/componentItem" }
@@ -244,15 +391,7 @@
             },
             "dependencies": {
               "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["name", "version"],
-                "additionalProperties": false,
-                "properties": {
-                  "name": { "type": "string" },
-                  "version": { "type": "string" }
-                }
-              }
+              "items": { "$ref": "#/$defs/dependency" }
             }
           }
         }

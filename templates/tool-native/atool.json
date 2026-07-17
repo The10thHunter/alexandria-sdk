@@ -1,0 +1,33 @@
+{
+  "schema_version": "2",
+  "name": "acme/delegate",
+  "version": "0.1.0",
+  "kind": "atool",
+  "description": "TODO: describe this code-less tool. It binds to a native orchestrator handler instead of shipping a binary.",
+  "author": "TODO",
+  "license": "Apache-2.0",
+  "config": {
+    "kind": "atool",
+    "native_handler": "emit_trigger",
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objective"],
+      "properties": {
+        "objective": {
+          "type": "string",
+          "description": "What the delegated agent should accomplish."
+        },
+        "acceptance": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Acceptance criteria the result must satisfy."
+        }
+      }
+    }
+  },
+  "permissions": {
+    "provides_tools": ["delegate"],
+    "suggested_role": "worker"
+  }
+}

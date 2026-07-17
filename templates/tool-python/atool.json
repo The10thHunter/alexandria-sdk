@@ -2,16 +2,33 @@
   "schema_version": "2",
   "name": "acme/my-tool",
   "version": "0.1.0",
-  "kind": "tool",
+  "kind": "mcp",
   "description": "TODO: describe what this tool does",
   "author": "TODO",
   "license": "Apache-2.0",
   "config": {
-    "kind": "tool",
+    "kind": "mcp",
     "binary": "bin/my-tool",
     "default_port": 7800,
     "transport": "http",
-    "args": []
+    "args": [],
+    "interface_major": 1,
+    "credentials": [
+      {
+        "env": "MY_TOOL_API_KEY",
+        "required": true,
+        "secret": true,
+        "description": "API key this tool reads. The operator binds the VALUE at install time into the deployment-shape secret backend; never put a secret here.",
+        "rotation": "respawn"
+      }
+    ],
+    "env": [
+      {
+        "name": "MY_TOOL_HOST",
+        "default": "example.com",
+        "required": false
+      }
+    ]
   },
   "files": [
     {

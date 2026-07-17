@@ -1,4 +1,13 @@
-"""Fluent builders for `.atool` / `.aagent` manifests."""
+"""Fluent builders for `.atool` / `.aagent` manifests (EE-canonical schema v2).
+
+Kinds mirror ``ee/crates/alex-package/src/manifest.rs``:
+
+- ``mcp``    — binary tool daemon over the MCP protocol (JSON-RPC/SSE)
+- ``atool``  — binary tool daemon over the native gRPC ``ToolService``
+- ``aagent`` — orchestrator-managed agent (``system_prompt``/``allowed_tools``/``model``).
+               A "skill" is reusable prompt text that ships as an aagent whose
+               content is its ``system_prompt`` — there is no standalone skill kind.
+"""
 
 from __future__ import annotations
 
@@ -27,8 +36,6 @@ class _Base:
         }
         # archive_path -> absolute source path on disk
         self._staged: list[tuple[str, str]] = []
-        # Default extension for `.pack()` when no explicit path is given.
-        self._default_ext: str = "atool"
 
     # --- common manifest fields ---
     def description(self, d: str) -> "_Base":
@@ -133,9 +140,16 @@ class _Base:
 
 
 class Tool(_Base):
+    """Binary tool builder.
+
+    Emits ``kind = atool`` (native gRPC ``ToolService``) by default; calling
+    ``.transport("http" | "sse")`` re-taxes the package to ``kind = mcp`` (MCP
+    JSON-RPC/SSE). ``.transport("grpc")`` keeps it an atool.
+    """
+
     def __init__(self, name: str, version: str) -> None:
-        super().__init__(name, version, "tool", {"kind": "tool", "binary": ""})
-        self._default_ext = "atool"
+        # Default transport is gRPC => atool, matching EE's AtoolConfig default.
+        super().__init__(name, version, "atool", {"kind": "atool", "binary": ""})
 
     def binary(self, p: str) -> "Tool":
         self._manifest["config"]["binary"] = p
@@ -146,11 +160,90 @@ class Tool(_Base):
         return self
 
     def transport(self, t: str) -> "Tool":
+        """Pick the wire protocol — and thereby the package kind.
+
+        ``"grpc"`` => kind atool (native ToolService); ``"http"``/``"sse"`` =>
+        kind mcp (MCP JSON-RPC/SSE).
+        """
+        kind = "atool" if t == "grpc" else "mcp"
+        self._manifest["kind"] = kind
+        self._manifest["config"]["kind"] = kind
         self._manifest["config"]["transport"] = t
         return self
 
     def args(self, a: list[str]) -> "Tool":
         self._manifest["config"]["args"] = list(a)
+        return self
+
+    def interface_major(self, n: int) -> "Tool":
+        """Contract/ABI major this tool exposes over its wire protocol (EE default 1)."""
+        self._manifest["config"]["interface_major"] = n
+        return self
+
+    def native_handler(self, name: str) -> "Tool":
+        """Declare a code-less tool that binds to a native orchestrator handler.
+
+        Set INSTEAD of a binary (closed set, currently ``"emit_trigger"``). Drops
+        the default-seeded empty ``binary``. A code-less tool must also declare
+        its :meth:`input_schema` — there is no daemon to advertise it.
+        """
+        self._manifest["config"]["native_handler"] = name
+        self._manifest["config"].pop("binary", None)
+        return self
+
+    def input_schema(self, schema: dict[str, Any]) -> "Tool":
+        """Declare the tool's full input contract as an embedded JSON Schema.
+
+        Required for a code-less tool (see :meth:`native_handler`); optional
+        static fallback for a coded tool.
+        """
+        self._manifest["config"]["input_schema"] = dict(schema)
+        return self
+
+    def credential(
+        self,
+        env: str,
+        *,
+        required: bool = False,
+        secret: bool = True,
+        description: str | None = None,
+        rotation: str = "respawn",
+    ) -> "Tool":
+        """Declare a secret credential this tool reads from an environment variable.
+
+        No secret *value* is ever placed in the package — the operator binds the
+        value into the deployment-shape secret backend at install time. ``secret``
+        defaults ``True`` and ``rotation`` defaults ``"respawn"``.
+        """
+        cred: dict[str, Any] = {
+            "env": env,
+            "secret": secret,
+            "required": required,
+            "rotation": rotation,
+        }
+        if description:
+            cred["description"] = description
+        self._manifest["config"].setdefault("credentials", []).append(cred)
+        return self
+
+    def env(
+        self,
+        name: str,
+        *,
+        default: str | None = None,
+        required: bool = False,
+    ) -> "Tool":
+        """Declare a non-secret config environment variable this tool reads.
+
+        Values are stored inline by the operator (name -> value), not as a secret
+        ref. ``default`` is a literal applied when the operator does not override.
+        """
+        decl: dict[str, Any] = {"name": name}
+        if default is not None:
+            decl["default"] = default
+        if required:
+            decl["required"] = True
+        self._manifest["config"].setdefault("env", []).append(decl)
         return self
 
     def k8s_image(self, img: str) -> "Tool":
@@ -184,8 +277,7 @@ class Tool(_Base):
 
 class Agent(_Base):
     def __init__(self, name: str, version: str) -> None:
-        super().__init__(name, version, "agent", {"kind": "agent", "system_prompt": ""})
-        self._default_ext = "aagent"
+        super().__init__(name, version, "aagent", {"kind": "aagent", "system_prompt": ""})
 
     def system_prompt(self, s: str) -> "Agent":
         self._manifest["config"]["system_prompt"] = s
@@ -199,26 +291,50 @@ class Agent(_Base):
         self._manifest["config"]["allowed_tools"] = list(t)
         return self
 
-    def llm(self, m: str) -> "Agent":
-        """Replaces v1 .model(). Sets config.llm (freeform preference)."""
-        self._manifest["config"]["llm"] = m
+    def model(self, m: str) -> "Agent":
+        """Preferred model backend id (EE ``config.model``). Replaces v1 ``.llm()``."""
+        self._manifest["config"]["model"] = m
         return self
 
     def history_limit(self, n: int) -> "Agent":
         self._manifest["config"]["history_limit"] = n
         return self
 
+    def prompt_mode(self, m: str) -> "Agent":
+        """Prompt composition mode against ``extends`` bases: "append" (default) | "replace"."""
+        self._manifest["config"]["prompt_mode"] = m
+        return self
+
+    def extend(self, base: dict[str, str]) -> "Agent":
+        """Append a base package this aagent extends. aagent-only in EE."""
+        self._manifest.setdefault("extends", []).append(dict(base))
+        return self
+
+    def extends_packages(self, bases: list[dict[str, str]]) -> "Agent":
+        self._manifest["extends"] = [dict(b) for b in bases]
+        return self
+
+    def lock(self, entry: dict[str, Any]) -> "Agent":
+        """Append a resolved inheritance lockfile entry (aagent-only)."""
+        self._manifest.setdefault("lockfile", []).append(dict(entry))
+        return self
+
+    def lockfile(self, entries: list[dict[str, Any]]) -> "Agent":
+        self._manifest["lockfile"] = [dict(e) for e in entries]
+        return self
+
     def component(self, name: str, id: str, child: "Agent | Skill") -> "Agent":
-        """Append an inline sub-agent or sub-skill component.
+        """Append an inline sub-agent component.
 
         ``name`` is the local label; ``id`` is the canonical ns/name@version.
-        Tools may only appear as refs, never inline.
+        Both Agent and Skill children emit kind=aagent. Binary tools may only
+        appear as refs, never inline.
         """
         child_manifest = child.build()
         item: dict[str, Any] = {
             "name": name,
             "id": id,
-            "kind": child_manifest["kind"],
+            "kind": "aagent",
             "config": child_manifest["config"],
         }
         if child_manifest.get("files"):
@@ -233,34 +349,63 @@ class Agent(_Base):
         return self
 
     def ref(self, ns_name_at_version: str) -> "Agent":
-        """Append an external ref component (any kind: tool, skill, or agent)."""
+        """Append an external ref component (any kind: mcp/atool tool, or aagent)."""
         self._manifest.setdefault("components", []).append({"ref": ns_name_at_version})
         return self
 
     def flatten(self, rules: dict[str, str]) -> "Agent":
-        """Set install.flatten merge rules (only meaningful on agents with components[])."""
+        """Set install.flatten merge rules (only meaningful on aagents with components[])."""
         self._manifest.setdefault("install", {})["flatten"] = dict(rules)
         return self
 
 
 class Skill(_Base):
+    """Skill builder.
+
+    A "skill" is reusable prompt text — EE has no standalone skill kind, so this
+    emits ``kind = aagent`` whose only content is ``system_prompt``.
+    """
+
     def __init__(self, name: str, version: str) -> None:
-        super().__init__(name, version, "skill", {"kind": "skill", "system_prompt": ""})
-        self._default_ext = "atool"
+        super().__init__(name, version, "aagent", {"kind": "aagent", "system_prompt": ""})
 
     def system_prompt(self, s: str) -> "Skill":
         self._manifest["config"]["system_prompt"] = s
+        return self
+
+    def system_prompt_from_file(self, p: str | Path) -> "Skill":
+        self._manifest["config"]["system_prompt"] = Path(p).read_text(encoding="utf-8")
         return self
 
     def allowed_tools(self, t: list[str]) -> "Skill":
         self._manifest["config"]["allowed_tools"] = list(t)
         return self
 
-    def llm(self, m: str) -> "Skill":
-        """Replaces v1 .model_hint(). Sets config.llm (freeform preference)."""
-        self._manifest["config"]["llm"] = m
+    def model(self, m: str) -> "Skill":
+        """Preferred model backend id (EE ``config.model``). Replaces v1 ``.model_hint()``."""
+        self._manifest["config"]["model"] = m
         return self
 
-    def tags(self, t: list[str]) -> "Skill":
-        self._manifest["config"]["tags"] = list(t)
+
+class Bundle(_Base):
+    """Bundle builder.
+
+    A bundle is a NON-callable named set of member tools — the unit a "role"
+    (doer/delegator/file-handler) is made of. It ships no binary, no
+    native_handler, no input_schema, no model, no system_prompt; it is pure
+    composition. Its doctrine/"skill" (the stance) lives in the top-level
+    ``.description(...)``. Emits ``kind = "bundle"`` with ``config.tools``.
+    """
+
+    def __init__(self, name: str, version: str) -> None:
+        super().__init__(name, version, "bundle", {"kind": "bundle", "tools": []})
+
+    def tool(self, ref: str) -> "Bundle":
+        """Append one member tool reference (optionally ``name@major``)."""
+        self._manifest["config"]["tools"].append(ref)
+        return self
+
+    def tools(self, refs: list[str]) -> "Bundle":
+        """Replace the member tool list. At least one is required by the schema."""
+        self._manifest["config"]["tools"] = list(refs)
         return self

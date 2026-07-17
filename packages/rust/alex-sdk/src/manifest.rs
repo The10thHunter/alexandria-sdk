@@ -1,4 +1,12 @@
-//! Serde types mirroring the TypeScript `Manifest` interface 1:1.
+//! Serde types mirroring the TypeScript `Manifest` interface 1:1
+//! (EE-canonical schema v2).
+//!
+//! Kinds mirror `ee/crates/alex-package/src/manifest.rs`:
+//!   `mcp`    — binary tool daemon over the MCP protocol (JSON-RPC/SSE)
+//!   `atool`  — binary tool daemon over the native gRPC `ToolService`
+//!   `aagent` — orchestrator-managed agent. A "skill" is reusable prompt text
+//!              that ships as an aagent whose content is its `system_prompt` —
+//!              there is no standalone skill kind.
 //!
 //! Field names match the on-disk JSON exactly (snake_case). Optional fields use
 //! `Option<_>` with `#[serde(skip_serializing_if = "Option::is_none")]` so
@@ -24,6 +32,14 @@ pub struct Manifest {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<Dependency>>,
+
+    /// Base packages this aagent extends. aagent-only — rejected on mcp/atool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends: Option<Vec<PackageDep>>,
+    /// Resolved inheritance lockfile (aagent-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lockfile: Option<Vec<LockEntry>>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<FileEntry>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -31,11 +47,11 @@ pub struct Manifest {
 
     pub config: PackageConfig,
 
-    /// Only valid on kind=agent. Inline sub-components or external refs.
+    /// Only valid on kind=aagent. Inline sub-components or external refs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub components: Option<Vec<ComponentItem>>,
 
-    /// Install-time merge rules. Only on agents with non-empty components.
+    /// Install-time merge rules. Only on aagents with non-empty components.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install: Option<InstallBlock>,
 
@@ -44,13 +60,14 @@ pub struct Manifest {
     pub signature: Option<SignatureBlock>,
 }
 
-/// Package kind. Mirrors the schema enum (kebab-case on the wire).
+/// Package kind. Mirrors the schema enum (lowercase on the wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
-    Tool,
-    Agent,
-    Skill,
+    Mcp,
+    Atool,
+    Aagent,
+    Bundle,
 }
 
 /// A single file declared in `files[]`.
@@ -75,11 +92,30 @@ pub struct Permissions {
     pub suggested_role: Option<String>,
 }
 
-/// A single declared dependency.
+/// A single declared dependency. `version` is required.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dependency {
     pub name: String,
     pub version: String,
+}
+
+/// Base-package reference used by aagent `extends`. Mirrors EE `PackageDep`
+/// (`version` has a serde default, so it is optional here).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackageDep {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// One resolved entry in an aagent's inheritance `lockfile`. Mirrors EE
+/// `LockEntry`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockEntry {
+    pub name: String,
+    pub interface_major: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract_hash: Option<String>,
 }
 
 /// CPU/memory request spec for the optional `k8s_resources` block.
@@ -99,10 +135,12 @@ pub struct K8sResources {
     pub limits: Option<K8sResourceSpec>,
 }
 
-/// Transports a local tool can speak.
+/// The wire protocol a binary tool speaks. Drives the package kind:
+/// `grpc` => atool (native ToolService); `http`/`sse` => mcp (MCP JSON-RPC/SSE).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ToolTransport {
+pub enum WireTransport {
+    Grpc,
     Http,
     Sse,
 }
@@ -116,17 +154,9 @@ pub enum ToolK8sTransport {
     Sse,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolConfig {
-    pub binary: String,
-
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_port: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transport: Option<ToolTransport>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub args: Option<Vec<String>>,
-
+/// k8s Helm-tier hints shared by both binary-tool configs (mcp + atool).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct K8sHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub k8s_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,31 +173,214 @@ pub struct ToolConfig {
     pub k8s_idle_timeout_seconds: Option<u32>,
 }
 
+/// How a rotated secret is re-injected. `oauth-refresh` is DECLARE-ONLY for now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Rotation {
+    Respawn,
+    OauthRefresh,
+}
+
+/// AUTHOR-TIME credential DECLARATION for a spawnable binary tool (`mcp`/`atool`).
+/// Declares the exact env var the tool reads for a secret and its rotation
+/// policy — it NEVER carries a secret value. The operator binds the value at
+/// install time into the deployment-shape secret backend (Quadlet = field-
+/// encrypted in Postgres; Helm = Vault or a native k8s Secret); the DB row holds
+/// only a REF. Additive — schema stays v2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialDecl {
+    /// Exact env var name THIS tool reads for the secret (ad-hoc per vendor).
+    pub env: String,
+    /// Whether this env var holds a secret value. Defaults to `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<bool>,
+    /// Whether the tool cannot spawn without this credential bound (fail-closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+    /// Human-facing description of what the credential is (e.g. "GitHub PAT").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// How a rotated secret is re-injected. Defaults to `respawn`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<Rotation>,
+}
+
+impl CredentialDecl {
+    /// Construct a credential decl with the EE defaults: `secret = true`,
+    /// `required = false`, `rotation = respawn`.
+    pub fn new(env: impl Into<String>) -> Self {
+        Self {
+            env: env.into(),
+            secret: Some(true),
+            required: Some(false),
+            description: None,
+            rotation: Some(Rotation::Respawn),
+        }
+    }
+    pub fn required(mut self, v: bool) -> Self {
+        self.required = Some(v);
+        self
+    }
+    pub fn secret(mut self, v: bool) -> Self {
+        self.secret = Some(v);
+        self
+    }
+    pub fn description(mut self, d: impl Into<String>) -> Self {
+        self.description = Some(d.into());
+        self
+    }
+    pub fn rotation(mut self, r: Rotation) -> Self {
+        self.rotation = Some(r);
+        self
+    }
+}
+
+/// AUTHOR-TIME declaration of a **non-secret** config env var. May carry a
+/// literal `default`; the operator-time binding stores its value inline (name ->
+/// value), not as a secret ref. Additive — schema stays v2.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvDecl {
+    /// Env var name the tool reads.
+    pub name: String,
+    /// Default literal value applied when the operator does not override it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    /// Whether the operator must supply a value (no usable default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+}
+
+impl EnvDecl {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            default: None,
+            required: None,
+        }
+    }
+    pub fn default_value(mut self, d: impl Into<String>) -> Self {
+        self.default = Some(d.into());
+        self
+    }
+    pub fn required(mut self, v: bool) -> Self {
+        self.required = Some(v);
+        self
+    }
+}
+
+/// `kind = mcp` config — a binary daemon reached over the MCP protocol.
+/// `transport` is the MCP wire (http/sse).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
+pub struct McpConfig {
+    pub binary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<McpTransport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Contract/ABI major this tool exposes. Defaults to 1 in EE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_major: Option<u32>,
+    /// Author-time secret credential declarations (no values ever stored here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<Vec<CredentialDecl>>,
+    /// Author-time non-secret config env declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<EnvDecl>>,
+    #[serde(flatten)]
+    pub k8s: K8sHints,
+}
+
+/// MCP wire transports (http/sse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    Http,
+    Sse,
+}
+
+/// `kind = atool` config — a native gRPC `ToolService` tool. `transport`
+/// defaults to "grpc".
+///
+/// A tool is EITHER **coded** (ships a `binary`) OR **code-less** (binds a
+/// `native_handler` and declares an `input_schema`). Exactly one of
+/// `{binary, native_handler}` must be set — enforced by the product
+/// (`ee/crates/alex-package`). Field style mirrors the EE struct: the unset
+/// side serialises to nothing (empty strings are skipped) so a code-less tool
+/// omits `binary` on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtoolConfig {
+    /// Entry-point binary (coded tool). Empty/omitted for a code-less tool.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub binary: String,
+    /// Native orchestrator handler a **code-less** tool binds to instead of a
+    /// binary. Closed set (currently `"emit_trigger"`), enforced by the product.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub native_handler: String,
+    /// Full JSON Schema for the tool's input contract. Required for a code-less
+    /// tool; optional static fallback for a coded tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<WireTransport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    /// Contract/ABI major this tool exposes. Defaults to 1 in EE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface_major: Option<u32>,
+    /// Author-time secret credential declarations (no values ever stored here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<Vec<CredentialDecl>>,
+    /// Author-time non-secret config env declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<EnvDecl>>,
+    #[serde(flatten)]
+    pub k8s: K8sHints,
+}
+
+/// `kind = aagent` config. A skill collapses into this shape with only
+/// `system_prompt` populated — there is no `tags` field and no standalone
+/// skill kind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AagentConfig {
     pub system_prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
-    /// Preferred LLM id (freeform, preference only). Replaces v1 `model`.
+    /// Preferred model backend id (EE `model`). Replaces v1 `model`/`model_hint`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm: Option<String>,
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_limit: Option<u32>,
+    /// How this prompt composes with `extends` bases: "append" (default) | "replace".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_mode: Option<PromptMode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SkillConfig {
-    pub system_prompt: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_tools: Option<Vec<String>>,
-    /// Preferred LLM id (freeform, preference only). Replaces v1 `model_hint`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tags: Option<Vec<String>>,
+/// `kind = bundle` config. A bundle is a NON-callable named set of member tools
+/// (the unit a "role" like doer/delegator/file-handler is made of). It ships no
+/// binary, no native_handler, no input_schema, no model, no system_prompt — pure
+/// composition. Its doctrine lives in the manifest top-level `description`.
+/// Mirrors EE `BundleConfig`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BundleConfig {
+    /// Member tool-name references (each optionally `name@major`). At least one —
+    /// a bundle grouping nothing has no identity (enforced by the schema).
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
-/// Merge rules for flattening components into the root agent at install time.
+/// Prompt composition mode against `extends` bases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptMode {
+    Append,
+    Replace,
+}
+
+/// Merge rules for flattening components into the root aagent at install time.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InstallFlatten {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -175,12 +388,12 @@ pub struct InstallFlatten {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub llm: Option<String>,
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_limit: Option<String>,
 }
 
-/// Install block — merge rules for an agent with components.
+/// Install block — merge rules for an aagent with components.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct InstallBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,7 +410,7 @@ pub struct SignatureBlock {
 }
 
 /// A discriminated union for components[]: either an external ref or an
-/// inline sub-agent/sub-skill.
+/// inline sub-agent.
 ///
 /// On the wire: if `ref` is present → external ref. Otherwise the inline fields apply.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,7 +418,7 @@ pub struct SignatureBlock {
 pub enum ComponentItem {
     /// External reference: `{ "ref": "ns/name@version" }`.
     Ref(RefComponent),
-    /// Inline sub-agent or sub-skill.
+    /// Inline sub-agent.
     Inline(InlineComponent),
 }
 
@@ -215,6 +428,8 @@ pub struct RefComponent {
     pub ref_target: String,
 }
 
+/// Inline sub-agent embedded in a parent aagent's components[]. Binary tools
+/// may only appear as refs, never inline — so the inline kind is always aagent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InlineComponent {
     pub name: String,
@@ -232,28 +447,27 @@ pub struct InlineComponent {
     pub dependencies: Option<Vec<Dependency>>,
 }
 
-/// Only agent and skill may appear inline; tools are refs only.
+/// Only aagent may appear inline; binary tools are refs only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "lowercase")]
 pub enum InlineComponentKind {
-    Agent,
-    Skill,
+    Aagent,
 }
 
-/// Config for an inline component (agent or skill only).
+/// Config for an inline component (aagent only).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum InlineConfig {
-    Agent(AgentConfig),
-    Skill(SkillConfig),
+    Aagent(AagentConfig),
 }
 
-/// The discriminated `config` payload. We use serde's internally-tagged enum
-/// representation so the JSON looks like `{"kind":"tool", "binary":...}`.
+/// The discriminated `config` payload. Internally-tagged so the JSON looks like
+/// `{"kind":"atool", "binary":...}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum PackageConfig {
-    Tool(ToolConfig),
-    Agent(AgentConfig),
-    Skill(SkillConfig),
+    Mcp(McpConfig),
+    Atool(AtoolConfig),
+    Aagent(AagentConfig),
+    Bundle(BundleConfig),
 }

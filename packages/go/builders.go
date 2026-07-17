@@ -140,20 +140,37 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// Tool is a fluent builder for kind=tool packages.
+// Tool is a fluent builder for binary-tool packages.
+//
+// It emits kind=atool (native gRPC ToolService) by default; calling
+// Transport("http") or Transport("sse") re-taxes the package to kind=mcp
+// (MCP JSON-RPC/SSE). Transport("grpc") keeps it an atool.
 type Tool struct {
 	base
-	cfg ToolConfig
+	cfg AtoolConfig // neutral field bag; kind is re-derived on Transport change
 }
 
 // NewTool constructs a Tool builder with the given name and version.
 func NewTool(name, version string) *Tool {
-	t := &Tool{cfg: ToolConfig{Kind: "tool"}}
-	t.base = newBase(name, version, KindTool, t.cfg)
+	// Default transport is gRPC => atool, matching EE's AtoolConfig default.
+	t := &Tool{cfg: AtoolConfig{Kind: "atool"}}
+	t.base = newBase(name, version, KindAtool, t.cfg)
 	return t
 }
 
-func (t *Tool) sync() *Tool { t.setConfig(t.cfg); return t }
+// sync re-derives the manifest kind + config from cfg. Transport grpc/none =>
+// atool; http/sse => mcp.
+func (t *Tool) sync() *Tool {
+	if t.cfg.Transport == "http" || t.cfg.Transport == "sse" {
+		t.cfg.Kind = "mcp"
+		t.manifest.Kind = KindMcp
+	} else {
+		t.cfg.Kind = "atool"
+		t.manifest.Kind = KindAtool
+	}
+	t.setConfig(t.cfg)
+	return t
+}
 
 // Description sets the human-readable description.
 func (t *Tool) Description(d string) *Tool { t.manifest.Description = d; return t }
@@ -205,11 +222,58 @@ func (t *Tool) Binary(p string) *Tool { t.cfg.Binary = p; return t.sync() }
 // Port sets config.default_port.
 func (t *Tool) Port(p int) *Tool { v := p; t.cfg.DefaultPort = &v; return t.sync() }
 
-// Transport sets config.transport (http|sse).
+// Transport picks the wire protocol — and thereby the package kind:
+// "grpc" => kind atool (native ToolService); "http"/"sse" => kind mcp.
 func (t *Tool) Transport(s string) *Tool { t.cfg.Transport = s; return t.sync() }
 
 // Args sets config.args.
 func (t *Tool) Args(a []string) *Tool { t.cfg.Args = a; return t.sync() }
+
+// InterfaceMajor sets config.interface_major (contract/ABI major; EE default 1).
+func (t *Tool) InterfaceMajor(n int) *Tool { v := n; t.cfg.InterfaceMajor = &v; return t.sync() }
+
+// NativeHandler declares this as a code-less tool that binds to a native
+// orchestrator handler INSTEAD of shipping a binary (closed set, currently
+// "emit_trigger"). It clears any default-seeded binary. A code-less tool must
+// also declare its InputSchema — there is no daemon to advertise it.
+func (t *Tool) NativeHandler(name string) *Tool {
+	t.cfg.NativeHandler = name
+	t.cfg.Binary = ""
+	return t.sync()
+}
+
+// InputSchema declares the tool's full input contract as an embedded JSON
+// Schema. Required for a code-less tool (see NativeHandler); optional static
+// fallback for a coded tool. schema is marshalled to JSON.
+func (t *Tool) InputSchema(schema any) *Tool {
+	raw, _ := json.Marshal(schema)
+	t.cfg.InputSchema = raw
+	return t.sync()
+}
+
+// Credential declares a secret credential this tool reads from an environment
+// variable. No secret value is ever placed in the package — the operator binds
+// the value into the deployment-shape secret backend at install time. The EE
+// defaults are applied when unset: Secret defaults to true and Rotation defaults
+// to "respawn".
+func (t *Tool) Credential(c CredentialDecl) *Tool {
+	if c.Secret == nil {
+		c.Secret = BoolPtr(true)
+	}
+	if c.Rotation == "" {
+		c.Rotation = "respawn"
+	}
+	t.cfg.Credentials = append(t.cfg.Credentials, c)
+	return t.sync()
+}
+
+// EnvVar declares a non-secret config environment variable this tool reads, with
+// an optional literal Default. Values are stored inline by the operator, not as
+// a secret ref.
+func (t *Tool) EnvVar(e EnvDecl) *Tool {
+	t.cfg.Env = append(t.cfg.Env, e)
+	return t.sync()
+}
 
 // K8sImage sets config.k8s_image.
 func (t *Tool) K8sImage(img string) *Tool { t.cfg.K8sImage = img; return t.sync() }
@@ -245,16 +309,16 @@ func (t *Tool) Pack(outPath string, opts ...PackOpt) (*Manifest, error) {
 	return t.base.packInternal(outPath, opts)
 }
 
-// Agent is a fluent builder for kind=agent packages.
+// Agent is a fluent builder for kind=aagent packages.
 type Agent struct {
 	base
-	cfg AgentConfig
+	cfg AagentConfig
 }
 
 // NewAgent constructs an Agent builder.
 func NewAgent(name, version string) *Agent {
-	a := &Agent{cfg: AgentConfig{Kind: "agent"}}
-	a.base = newBase(name, version, KindAgent, a.cfg)
+	a := &Agent{cfg: AagentConfig{Kind: "aagent"}}
+	a.base = newBase(name, version, KindAagent, a.cfg)
 	return a
 }
 
@@ -320,11 +384,32 @@ func (a *Agent) SystemPromptFromFile(p string) *Agent {
 // AllowedTools sets config.allowed_tools.
 func (a *Agent) AllowedTools(t []string) *Agent { a.cfg.AllowedTools = t; return a.sync() }
 
-// LLM sets config.llm (replaces v1 Model). Freeform preferred LLM id.
-func (a *Agent) LLM(m string) *Agent { a.cfg.LLM = m; return a.sync() }
+// Model sets config.model (replaces v1 LLM). Preferred model backend id.
+func (a *Agent) Model(m string) *Agent { a.cfg.Model = m; return a.sync() }
 
 // HistoryLimit sets config.history_limit.
 func (a *Agent) HistoryLimit(n int) *Agent { v := n; a.cfg.HistoryLimit = &v; return a.sync() }
+
+// PromptMode sets config.prompt_mode ("append" | "replace").
+func (a *Agent) PromptMode(m string) *Agent { a.cfg.PromptMode = m; return a.sync() }
+
+// Extend appends a base package this aagent extends. aagent-only in EE.
+func (a *Agent) Extend(base PackageDep) *Agent {
+	a.manifest.Extends = append(a.manifest.Extends, base)
+	return a
+}
+
+// ExtendsPackages replaces the extends slice.
+func (a *Agent) ExtendsPackages(bases []PackageDep) *Agent { a.manifest.Extends = bases; return a }
+
+// Lock appends a resolved inheritance lockfile entry (aagent-only).
+func (a *Agent) Lock(entry LockEntry) *Agent {
+	a.manifest.Lockfile = append(a.manifest.Lockfile, entry)
+	return a
+}
+
+// Lockfile replaces the lockfile slice.
+func (a *Agent) Lockfile(entries []LockEntry) *Agent { a.manifest.Lockfile = entries; return a }
 
 // Componentable is any builder that can be embedded as an inline component
 // in an Agent's components[]. Agent and Skill both implement it.
@@ -334,7 +419,8 @@ type Componentable interface {
 
 // Component appends an inline sub-agent or sub-skill to components[].
 // name is the local label; id is the canonical ns/name@version. child may be
-// either *Agent or *Skill (anything implementing Componentable).
+// either *Agent or *Skill — both emit kind=aagent. Binary tools may only appear
+// as refs, never inline.
 func (a *Agent) Component(name, id string, child Componentable) *Agent {
 	a.sync()
 	m, err := child.Build()
@@ -347,7 +433,7 @@ func (a *Agent) Component(name, id string, child Componentable) *Agent {
 	item := ComponentItem{
 		Name:   name,
 		ID:     id,
-		Kind:   string(m.Kind),
+		Kind:   "aagent",
 		Config: raw,
 	}
 	if len(m.Files) > 0 {
@@ -366,7 +452,7 @@ func (a *Agent) Component(name, id string, child Componentable) *Agent {
 	return a
 }
 
-// Ref appends an external ref component (any kind: tool, skill, or agent).
+// Ref appends an external ref component (any kind: mcp/atool tool, or aagent).
 func (a *Agent) Ref(nsNameAtVersion string) *Agent {
 	a.sync()
 	a.manifest.Components = append(a.manifest.Components, ComponentItem{Ref: nsNameAtVersion})
@@ -392,16 +478,18 @@ func (a *Agent) Pack(outPath string, opts ...PackOpt) (*Manifest, error) {
 	return a.base.packInternal(outPath, opts)
 }
 
-// Skill is a fluent builder for kind=skill packages.
+// Skill is a fluent builder for reusable-prompt "skill" packages. A skill is
+// reusable prompt text — EE has no standalone skill kind, so this emits
+// kind=aagent whose only content is system_prompt.
 type Skill struct {
 	base
-	cfg SkillConfig
+	cfg AagentConfig
 }
 
 // NewSkill constructs a Skill builder.
 func NewSkill(name, version string) *Skill {
-	s := &Skill{cfg: SkillConfig{Kind: "skill"}}
-	s.base = newBase(name, version, KindSkill, s.cfg)
+	s := &Skill{cfg: AagentConfig{Kind: "aagent"}}
+	s.base = newBase(name, version, KindAagent, s.cfg)
 	return s
 }
 
@@ -453,22 +541,96 @@ func (s *Skill) SuggestedRole(r string) *Skill { s.ensurePerms().SuggestedRole =
 // SystemPrompt sets config.system_prompt.
 func (s *Skill) SystemPrompt(p string) *Skill { s.cfg.SystemPrompt = p; return s.sync() }
 
+// SystemPromptFromFile reads the system prompt from disk.
+func (s *Skill) SystemPromptFromFile(p string) *Skill {
+	data, err := os.ReadFile(p)
+	if err != nil {
+		s.cfg.SystemPrompt = ""
+		return s.sync()
+	}
+	s.cfg.SystemPrompt = string(data)
+	return s.sync()
+}
+
 // AllowedTools sets config.allowed_tools.
 func (s *Skill) AllowedTools(t []string) *Skill { s.cfg.AllowedTools = t; return s.sync() }
 
-// LLM sets config.llm (replaces v1 ModelHint). Freeform preferred LLM id.
-func (s *Skill) LLM(m string) *Skill { s.cfg.LLM = m; return s.sync() }
-
-// Tags sets config.tags.
-func (s *Skill) Tags(t []string) *Skill { s.cfg.Tags = t; return s.sync() }
+// Model sets config.model (replaces v1 ModelHint). Preferred model backend id.
+func (s *Skill) Model(m string) *Skill { s.cfg.Model = m; return s.sync() }
 
 // Build returns the validated manifest.
 func (s *Skill) Build() (*Manifest, error) { s.sync(); return s.base.build() }
 
-// Pack writes a .atool to outPath.
+// Pack writes a .aagent to outPath.
 func (s *Skill) Pack(outPath string, opts ...PackOpt) (*Manifest, error) {
 	s.sync()
 	return s.base.packInternal(outPath, opts)
+}
+
+// Bundle is a fluent builder for kind=bundle packages.
+//
+// A bundle is a NON-callable named set of member tools — the unit a "role"
+// (doer/delegator/file-handler) is made of. It ships no binary, no
+// native_handler, no input_schema, no model, no system_prompt; it is pure
+// composition. Its doctrine/"skill" (the stance) lives in the top-level
+// Description.
+type Bundle struct {
+	base
+	cfg BundleConfig
+}
+
+// NewBundle constructs a Bundle builder.
+func NewBundle(name, version string) *Bundle {
+	b := &Bundle{cfg: BundleConfig{Kind: "bundle", Tools: []string{}}}
+	b.base = newBase(name, version, KindBundle, b.cfg)
+	return b
+}
+
+func (b *Bundle) sync() *Bundle { b.setConfig(b.cfg); return b }
+
+// Description sets the human-readable description (carries the bundle's stance).
+func (b *Bundle) Description(d string) *Bundle { b.manifest.Description = d; return b }
+
+// Author sets the author field.
+func (b *Bundle) Author(a string) *Bundle { b.manifest.Author = a; return b }
+
+// License sets the license field.
+func (b *Bundle) License(l string) *Bundle { b.manifest.License = l; return b }
+
+// RequiresAlexandria sets the minimum Alexandria version.
+func (b *Bundle) RequiresAlexandria(v string) *Bundle { b.manifest.RequiresAlexandria = v; return b }
+
+// Dependency appends a dependency.
+func (b *Bundle) Dependency(d Dependency) *Bundle {
+	b.manifest.Dependencies = append(b.manifest.Dependencies, d)
+	return b
+}
+
+// Dependencies replaces the dependencies slice.
+func (b *Bundle) Dependencies(ds []Dependency) *Bundle { b.manifest.Dependencies = ds; return b }
+
+// ProvidesTools sets permissions.provides_tools.
+func (b *Bundle) ProvidesTools(s []string) *Bundle { b.ensurePerms().ProvidesTools = s; return b }
+
+// NeedsTools sets permissions.needs_tools.
+func (b *Bundle) NeedsTools(s []string) *Bundle { b.ensurePerms().NeedsTools = s; return b }
+
+// SuggestedRole sets permissions.suggested_role.
+func (b *Bundle) SuggestedRole(r string) *Bundle { b.ensurePerms().SuggestedRole = r; return b }
+
+// Tool appends one member tool reference (optionally name@major).
+func (b *Bundle) Tool(ref string) *Bundle { b.cfg.Tools = append(b.cfg.Tools, ref); return b.sync() }
+
+// Tools replaces the member tool list. At least one is required by the schema.
+func (b *Bundle) Tools(refs []string) *Bundle { b.cfg.Tools = append([]string{}, refs...); return b.sync() }
+
+// Build returns the validated manifest.
+func (b *Bundle) Build() (*Manifest, error) { b.sync(); return b.base.build() }
+
+// Pack writes a .atool bundle to outPath.
+func (b *Bundle) Pack(outPath string, opts ...PackOpt) (*Manifest, error) {
+	b.sync()
+	return b.base.packInternal(outPath, opts)
 }
 
 func shortName(n string) string {

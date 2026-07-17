@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent, Skill, Tool, verify, inspect, validate } from "../src/index.js";
+import { Agent, Skill, Tool, Bundle, verify, inspect, validate } from "../src/index.js";
 import { migrateManifest } from "../src/cli.js";
 
 test("Agent builder packs a valid .aagent and round-trips through verify", async () => {
@@ -196,6 +196,39 @@ test("Skill emits kind=aagent (prompt-only, no tags)", async () => {
     assert.equal(m.config.system_prompt, "You are a specialized skill.");
     assert.ok(!("tags" in m.config), "aagent config must not carry tags");
   }
+});
+
+test("Bundle emits kind=bundle (pure composition, no binary/prompt) and round-trips", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sdk-"));
+  const out = join(dir, "doer-0.1.0.atool");
+
+  await new Bundle("essentials/doer", "0.1.0")
+    .description("The doer stance: do the work, then submit or report blocked.")
+    .tool("essentials/submit-deliverable")
+    .tool("essentials/report-blocked")
+    .pack(out);
+
+  const m = await verify(out);
+  assert.equal(m.kind, "bundle");
+  assert.equal(m.schema_version, "2");
+  if (m.config.kind === "bundle") {
+    assert.deepEqual(m.config.tools, ["essentials/submit-deliverable", "essentials/report-blocked"]);
+    assert.ok(!("binary" in m.config), "bundle ships no binary");
+    assert.ok(!("system_prompt" in m.config), "bundle ships no system_prompt");
+  }
+});
+
+test("validation rejects a bundle with empty tools (minItems:1)", () => {
+  const manifest = {
+    schema_version: "2",
+    name: "essentials/empty-bundle",
+    version: "0.1.0",
+    kind: "bundle",
+    description: "a bundle grouping nothing",
+    config: { kind: "bundle", tools: [] },
+  };
+  const result = validate(manifest);
+  assert.equal(result.ok, false, "bundle with no tools must be rejected");
 });
 
 test("Agent with extends + lockfile round-trips", async () => {

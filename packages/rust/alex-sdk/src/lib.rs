@@ -21,11 +21,11 @@ pub mod pack;
 pub mod publish;
 pub mod schema;
 
-pub use builders::{Agent, Skill, Tool};
+pub use builders::{Agent, Bundle, Skill, Tool};
 pub use manifest::{
-    AagentConfig, AtoolConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl, FileEntry,
-    InlineComponent, InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten, K8sHints,
-    K8sResourceSpec, K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport,
+    AagentConfig, AtoolConfig, BundleConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl,
+    FileEntry, InlineComponent, InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten,
+    K8sHints, K8sResourceSpec, K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport,
     PackageConfig, PackageDep, Permissions, PromptMode, RefComponent, Rotation, SignatureBlock,
     ToolK8sTransport, WireTransport,
 };

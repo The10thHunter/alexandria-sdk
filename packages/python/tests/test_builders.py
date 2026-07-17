@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from alexandria_sdk import Agent, Skill, Tool, inspect, pack, verify
+from alexandria_sdk import Agent, Bundle, Skill, Tool, inspect, pack, verify
 from alexandria_sdk.cli import _migrate_manifest
 from alexandria_sdk.schema import validate
 
@@ -403,6 +403,41 @@ def test_invalid_manifest_missing_description_raises(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="Invalid atool manifest"):
         bad.pack(out)
+
+
+def test_bundle_build_pack_verify_round_trip(tmp_path: Path) -> None:
+    out = tmp_path / "doer-0.1.0.atool"
+    manifest = (
+        Bundle("essentials/doer", "0.1.0")
+        .description("The doer stance: do the work, then submit or report blocked.")
+        .tool("essentials/submit-deliverable")
+        .tool("essentials/report-blocked")
+        .pack(out)
+    )
+    assert manifest["kind"] == "bundle"
+    assert manifest["config"]["kind"] == "bundle"
+    assert manifest["config"]["tools"] == [
+        "essentials/submit-deliverable",
+        "essentials/report-blocked",
+    ]
+    assert "binary" not in manifest["config"], "bundle ships no binary"
+    assert "system_prompt" not in manifest["config"], "bundle ships no system_prompt"
+
+    verified = verify(out)
+    assert verified["config"]["tools"][0] == "essentials/submit-deliverable"
+
+
+def test_validation_rejects_bundle_with_empty_tools() -> None:
+    manifest = {
+        "schema_version": "2",
+        "name": "essentials/empty-bundle",
+        "version": "0.1.0",
+        "kind": "bundle",
+        "description": "a bundle grouping nothing",
+        "config": {"kind": "bundle", "tools": []},
+    }
+    ok, _errors = validate(manifest)
+    assert not ok, "bundle with no tools must be rejected (minItems:1)"
 
 
 # --- Migration tests ---

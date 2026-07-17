@@ -11,10 +11,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::manifest::{
-    AagentConfig, AtoolConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl, FileEntry,
-    InlineComponent, InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten, K8sHints,
-    K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport, PackageConfig, PackageDep,
-    Permissions, PromptMode, RefComponent, WireTransport,
+    AagentConfig, AtoolConfig, BundleConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl,
+    FileEntry, InlineComponent, InlineComponentKind, InlineConfig, InstallBlock, InstallFlatten,
+    K8sHints, K8sResources, Kind, LockEntry, Manifest, McpConfig, McpTransport, PackageConfig,
+    PackageDep, Permissions, PromptMode, RefComponent, WireTransport,
 };
 use crate::pack::{self, write_manifest};
 use crate::schema;
@@ -614,6 +614,49 @@ impl Skill {
     /// Preferred model backend id (EE `config.model`). Replaces v1 `.model_hint()`.
     pub fn model(mut self, m: impl Into<String>) -> Self {
         self.cfg().model = Some(m.into());
+        self
+    }
+
+    common_builder_methods!();
+}
+
+// ---------------------------------------------------------------------------
+// Bundle (kind = bundle)
+// ---------------------------------------------------------------------------
+
+/// Builder for `kind: bundle` packages. A bundle is a NON-callable named set of
+/// member tools — the unit a "role" (doer/delegator/file-handler) is made of. It
+/// ships no binary, no native_handler, no input_schema, no model, no
+/// system_prompt; it is pure composition. Its doctrine/"skill" (the stance)
+/// lives in the top-level `.description(...)`.
+pub struct Bundle {
+    inner: Inner,
+}
+
+impl Bundle {
+    pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
+        let config = PackageConfig::Bundle(BundleConfig { tools: Vec::new() });
+        Self {
+            inner: Inner::new(name, version, Kind::Bundle, config),
+        }
+    }
+
+    fn cfg(&mut self) -> &mut BundleConfig {
+        match &mut self.inner.manifest.config {
+            PackageConfig::Bundle(c) => c,
+            _ => unreachable!("Bundle builder always holds a BundleConfig"),
+        }
+    }
+
+    /// Append one member tool reference (optionally `name@major`).
+    pub fn tool(mut self, ref_: impl Into<String>) -> Self {
+        self.cfg().tools.push(ref_.into());
+        self
+    }
+
+    /// Replace the member tool list. At least one is required by the schema.
+    pub fn tools(mut self, refs: Vec<String>) -> Self {
+        self.cfg().tools = refs;
         self
     }
 

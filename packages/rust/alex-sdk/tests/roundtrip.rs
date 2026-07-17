@@ -8,7 +8,7 @@ use alex_sdk::manifest::{
     PromptMode, Rotation, WireTransport,
 };
 use alex_sdk::migrate::migrate_manifest;
-use alex_sdk::{validate, verify, Agent, Skill, Tool};
+use alex_sdk::{validate, verify, Agent, Bundle, Skill, Tool};
 
 #[test]
 fn agent_build_pack_verify_roundtrip() {
@@ -369,6 +369,57 @@ fn skill_emits_aagent_with_model() {
     }
 
     verify(&out).expect("verify");
+}
+
+#[test]
+fn bundle_build_pack_verify_round_trips() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("doer-0.1.0.atool");
+
+    let manifest = Bundle::new("essentials/doer", "0.1.0")
+        .description("The doer stance: do the work, then submit or report blocked.")
+        .tool("essentials/submit-deliverable")
+        .tool("essentials/report-blocked")
+        .pack(&out)
+        .expect("pack");
+
+    assert_eq!(manifest.kind, alex_sdk::manifest::Kind::Bundle);
+    if let PackageConfig::Bundle(cfg) = &manifest.config {
+        assert_eq!(
+            cfg.tools,
+            vec![
+                "essentials/submit-deliverable".to_string(),
+                "essentials/report-blocked".to_string()
+            ]
+        );
+    } else {
+        panic!("expected BundleConfig");
+    }
+
+    // A bundle is pure composition — no binary / system_prompt on the wire.
+    let serialised = serde_json::to_string(&manifest).expect("serialise");
+    assert!(
+        !serialised.contains("\"binary\"") && !serialised.contains("system_prompt"),
+        "bundle must be pure composition: {serialised}"
+    );
+
+    verify(&out).expect("verify");
+}
+
+#[test]
+fn bundle_with_empty_tools_is_rejected() {
+    let manifest = serde_json::json!({
+        "schema_version": "2",
+        "name": "essentials/empty-bundle",
+        "version": "0.1.0",
+        "kind": "bundle",
+        "description": "a bundle grouping nothing",
+        "config": { "kind": "bundle", "tools": [] }
+    });
+    assert!(
+        validate(&manifest).is_err(),
+        "bundle with no tools must be rejected (minItems:1)"
+    );
 }
 
 #[test]

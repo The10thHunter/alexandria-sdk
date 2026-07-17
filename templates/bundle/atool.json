@@ -1,21 +1,16 @@
 {
   "schema_version": "2",
-  "name": "acme/my-bundle",
+  "name": "essentials/doer",
   "version": "0.1.0",
-  "kind": "aagent",
-  "description": "TODO: describe what this agent ships — converted from v1 bundle",
-  "author": "TODO",
+  "kind": "bundle",
+  "description": "The doer stance: you are handed a scoped objective and the exact tools to close it. Do the work, then account for it — submit a deliverable when the objective is met, or report blocked (with the specific reason and what you tried) when it is not. Never leave a task in an ambiguous state; every run ends in exactly one of those two outcomes.",
+  "author": "Alexandria",
   "license": "Apache-2.0",
   "config": {
-    "kind": "aagent",
-    "system_prompt": "TODO: add system_prompt before publishing.",
-    "allowed_tools": []
-  },
-  "extends": [
-    { "name": "acme/base-agent", "version": "0.1.0" }
-  ],
-  "components": [
-    { "ref": "acme/some-tool@0.1.0" },
-    { "ref": "acme/some-agent@0.1.0" }
-  ]
+    "kind": "bundle",
+    "tools": [
+      "essentials/submit-deliverable",
+      "essentials/report-blocked"
+    ]
+  }
 }

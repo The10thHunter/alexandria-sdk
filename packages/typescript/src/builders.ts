@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { pack } from "./pack.js";
 import { assertValid } from "./schema.js";
 import type {
-  AagentConfig, AtoolConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl, FileEntry,
+  AagentConfig, AtoolConfig, BundleConfig, ComponentItem, CredentialDecl, Dependency, EnvDecl, FileEntry,
   InlineComponent, InstallFlatten, K8sResources, LockEntry, Manifest, McpConfig, PackageDep,
   Permissions,
 } from "./types.js";
@@ -269,4 +269,22 @@ export class Skill extends Base<AagentConfig> {
   allowedTools(t: string[]): this { this.manifest.config.allowed_tools = t; return this; }
   /** Preferred model backend id (EE `config.model`). Replaces v1 `.modelHint()`. */
   model(id: string): this { this.manifest.config.model = id; return this; }
+}
+
+/**
+ * Bundle builder. A bundle is a NON-callable named set of member tools — the
+ * unit a "role" (doer/delegator/file-handler) is made of. It ships no binary,
+ * no native_handler, no input_schema, no model, no system_prompt; it is pure
+ * composition. Its doctrine/"skill" (the stance) lives in the top-level
+ * `.description(...)`. Emits `kind = "bundle"` with `config.tools`.
+ */
+export class Bundle extends Base<BundleConfig> {
+  declare protected manifest: Manifest & { config: BundleConfig };
+  constructor(name: string, version: string) {
+    super(name, version, "bundle", { kind: "bundle", tools: [] });
+  }
+  /** Add one member tool reference (optionally `name@major`). */
+  tool(ref: string): this { this.manifest.config.tools.push(ref); return this; }
+  /** Replace the member tool list. At least one is required by the schema. */
+  tools(refs: string[]): this { this.manifest.config.tools = [...refs]; return this; }
 }

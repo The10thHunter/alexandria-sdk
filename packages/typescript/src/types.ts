@@ -9,7 +9,11 @@
 //
 // Field names below are the serde names in manifest.rs; SDK output must
 // deserialize into the EE structs unchanged.
-export type Kind = "mcp" | "atool" | "aagent";
+//   bundle — a NON-callable named set of member tools (the unit a "role" like
+//            doer/delegator/file-handler is made of). Ships no binary, no
+//            native_handler, no input_schema, no model, no system_prompt — pure
+//            composition. Its doctrine/"skill" lives in the top-level description.
+export type Kind = "mcp" | "atool" | "aagent" | "bundle";
 
 export interface FileEntry {
   archive_path: string;
@@ -176,6 +180,17 @@ export interface AagentConfig {
   prompt_mode?: "append" | "replace";
 }
 
+/**
+ * `kind = bundle` config. Mirrors EE `BundleConfig`. A bundle is a non-callable
+ * named set of member tools — pure composition, no binary/handler/prompt. Its
+ * doctrine lives in the manifest top-level `description`.
+ */
+export interface BundleConfig {
+  kind: "bundle";
+  /** Member tool-name references (each optionally `name@major`). At least one. */
+  tools: string[];
+}
+
 /** Either binary-tool config (mcp or atool). */
 export type BinaryToolConfig = McpConfig | AtoolConfig;
 
@@ -219,7 +234,7 @@ export interface SignatureBlock {
   scope: "bundle" | "per_component";
 }
 
-export type PackageConfig = McpConfig | AtoolConfig | AagentConfig;
+export type PackageConfig = McpConfig | AtoolConfig | AagentConfig | BundleConfig;
 
 export interface Manifest {
   schema_version: "2";

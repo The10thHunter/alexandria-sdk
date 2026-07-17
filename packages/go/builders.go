@@ -567,6 +567,72 @@ func (s *Skill) Pack(outPath string, opts ...PackOpt) (*Manifest, error) {
 	return s.base.packInternal(outPath, opts)
 }
 
+// Bundle is a fluent builder for kind=bundle packages.
+//
+// A bundle is a NON-callable named set of member tools — the unit a "role"
+// (doer/delegator/file-handler) is made of. It ships no binary, no
+// native_handler, no input_schema, no model, no system_prompt; it is pure
+// composition. Its doctrine/"skill" (the stance) lives in the top-level
+// Description.
+type Bundle struct {
+	base
+	cfg BundleConfig
+}
+
+// NewBundle constructs a Bundle builder.
+func NewBundle(name, version string) *Bundle {
+	b := &Bundle{cfg: BundleConfig{Kind: "bundle", Tools: []string{}}}
+	b.base = newBase(name, version, KindBundle, b.cfg)
+	return b
+}
+
+func (b *Bundle) sync() *Bundle { b.setConfig(b.cfg); return b }
+
+// Description sets the human-readable description (carries the bundle's stance).
+func (b *Bundle) Description(d string) *Bundle { b.manifest.Description = d; return b }
+
+// Author sets the author field.
+func (b *Bundle) Author(a string) *Bundle { b.manifest.Author = a; return b }
+
+// License sets the license field.
+func (b *Bundle) License(l string) *Bundle { b.manifest.License = l; return b }
+
+// RequiresAlexandria sets the minimum Alexandria version.
+func (b *Bundle) RequiresAlexandria(v string) *Bundle { b.manifest.RequiresAlexandria = v; return b }
+
+// Dependency appends a dependency.
+func (b *Bundle) Dependency(d Dependency) *Bundle {
+	b.manifest.Dependencies = append(b.manifest.Dependencies, d)
+	return b
+}
+
+// Dependencies replaces the dependencies slice.
+func (b *Bundle) Dependencies(ds []Dependency) *Bundle { b.manifest.Dependencies = ds; return b }
+
+// ProvidesTools sets permissions.provides_tools.
+func (b *Bundle) ProvidesTools(s []string) *Bundle { b.ensurePerms().ProvidesTools = s; return b }
+
+// NeedsTools sets permissions.needs_tools.
+func (b *Bundle) NeedsTools(s []string) *Bundle { b.ensurePerms().NeedsTools = s; return b }
+
+// SuggestedRole sets permissions.suggested_role.
+func (b *Bundle) SuggestedRole(r string) *Bundle { b.ensurePerms().SuggestedRole = r; return b }
+
+// Tool appends one member tool reference (optionally name@major).
+func (b *Bundle) Tool(ref string) *Bundle { b.cfg.Tools = append(b.cfg.Tools, ref); return b.sync() }
+
+// Tools replaces the member tool list. At least one is required by the schema.
+func (b *Bundle) Tools(refs []string) *Bundle { b.cfg.Tools = append([]string{}, refs...); return b.sync() }
+
+// Build returns the validated manifest.
+func (b *Bundle) Build() (*Manifest, error) { b.sync(); return b.base.build() }
+
+// Pack writes a .atool bundle to outPath.
+func (b *Bundle) Pack(outPath string, opts ...PackOpt) (*Manifest, error) {
+	b.sync()
+	return b.base.packInternal(outPath, opts)
+}
+
 func shortName(n string) string {
 	if i := strings.LastIndex(n, "/"); i >= 0 {
 		return n[i+1:]

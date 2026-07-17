@@ -23,6 +23,7 @@ const (
 	KindMcp    Kind = "mcp"
 	KindAtool  Kind = "atool"
 	KindAagent Kind = "aagent"
+	KindBundle Kind = "bundle"
 )
 
 // FileEntry is a declared file inside the package archive.
@@ -164,6 +165,18 @@ type AagentConfig struct {
 	PromptMode string `json:"prompt_mode,omitempty"`
 }
 
+// BundleConfig is the typed `config` block for kind=bundle. A bundle is a
+// NON-callable named set of member tools (the unit a "role" like
+// doer/delegator/file-handler is made of). It ships no binary, no
+// native_handler, no input_schema, no model, no system_prompt — pure
+// composition. Its doctrine lives in the manifest top-level Description.
+// Tools must carry at least one member; each is a tool-name ref (optionally
+// name@major).
+type BundleConfig struct {
+	Kind  string   `json:"kind"`
+	Tools []string `json:"tools"`
+}
+
 // InstallFlatten defines merge rules for components at install time.
 type InstallFlatten struct {
 	SystemPrompt string `json:"system_prompt,omitempty"`
@@ -270,6 +283,18 @@ func (m *Manifest) AagentConfig() (*AagentConfig, error) {
 	var c AagentConfig
 	if err := json.Unmarshal(m.Config, &c); err != nil {
 		return nil, fmt.Errorf("decode aagent config: %w", err)
+	}
+	return &c, nil
+}
+
+// BundleConfig decodes m.Config as a BundleConfig. Returns an error if Kind != bundle.
+func (m *Manifest) BundleConfig() (*BundleConfig, error) {
+	if m.Kind != KindBundle {
+		return nil, fmt.Errorf("manifest kind is %q, not bundle", m.Kind)
+	}
+	var c BundleConfig
+	if err := json.Unmarshal(m.Config, &c); err != nil {
+		return nil, fmt.Errorf("decode bundle config: %w", err)
 	}
 	return &c, nil
 }

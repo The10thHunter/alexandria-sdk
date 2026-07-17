@@ -385,3 +385,27 @@ class Skill(_Base):
         """Preferred model backend id (EE ``config.model``). Replaces v1 ``.model_hint()``."""
         self._manifest["config"]["model"] = m
         return self
+
+
+class Bundle(_Base):
+    """Bundle builder.
+
+    A bundle is a NON-callable named set of member tools — the unit a "role"
+    (doer/delegator/file-handler) is made of. It ships no binary, no
+    native_handler, no input_schema, no model, no system_prompt; it is pure
+    composition. Its doctrine/"skill" (the stance) lives in the top-level
+    ``.description(...)``. Emits ``kind = "bundle"`` with ``config.tools``.
+    """
+
+    def __init__(self, name: str, version: str) -> None:
+        super().__init__(name, version, "bundle", {"kind": "bundle", "tools": []})
+
+    def tool(self, ref: str) -> "Bundle":
+        """Append one member tool reference (optionally ``name@major``)."""
+        self._manifest["config"]["tools"].append(ref)
+        return self
+
+    def tools(self, refs: list[str]) -> "Bundle":
+        """Replace the member tool list. At least one is required by the schema."""
+        self._manifest["config"]["tools"] = list(refs)
+        return self

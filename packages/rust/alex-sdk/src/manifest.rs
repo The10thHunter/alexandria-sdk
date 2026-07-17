@@ -67,6 +67,7 @@ pub enum Kind {
     Mcp,
     Atool,
     Aagent,
+    Bundle,
 }
 
 /// A single file declared in `files[]`.
@@ -358,6 +359,19 @@ pub struct AagentConfig {
     pub prompt_mode: Option<PromptMode>,
 }
 
+/// `kind = bundle` config. A bundle is a NON-callable named set of member tools
+/// (the unit a "role" like doer/delegator/file-handler is made of). It ships no
+/// binary, no native_handler, no input_schema, no model, no system_prompt — pure
+/// composition. Its doctrine lives in the manifest top-level `description`.
+/// Mirrors EE `BundleConfig`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BundleConfig {
+    /// Member tool-name references (each optionally `name@major`). At least one —
+    /// a bundle grouping nothing has no identity (enforced by the schema).
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
 /// Prompt composition mode against `extends` bases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -455,4 +469,5 @@ pub enum PackageConfig {
     Mcp(McpConfig),
     Atool(AtoolConfig),
     Aagent(AagentConfig),
+    Bundle(BundleConfig),
 }

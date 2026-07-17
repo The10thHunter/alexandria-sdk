@@ -248,6 +248,55 @@ func TestValidationRejectsAtoolWithNeitherBinaryNorHandler(t *testing.T) {
 	}
 }
 
+func TestBundleBuildPackVerifyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "doer-0.1.0.atool")
+
+	b := alexsdk.NewBundle("essentials/doer", "0.1.0").
+		Description("The doer stance: do the work, then submit or report blocked.").
+		Tool("essentials/submit-deliverable").
+		Tool("essentials/report-blocked")
+
+	if _, err := b.Pack(out); err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+
+	got, err := alexsdk.Verify(out)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if got.Kind != alexsdk.KindBundle {
+		t.Fatalf("expected kind=bundle, got %q", got.Kind)
+	}
+	bc, err := got.BundleConfig()
+	if err != nil {
+		t.Fatalf("BundleConfig: %v", err)
+	}
+	if len(bc.Tools) != 2 || bc.Tools[0] != "essentials/submit-deliverable" {
+		t.Fatalf("unexpected bundle tools %+v", bc.Tools)
+	}
+	if strings.Contains(string(got.Config), "\"binary\"") || strings.Contains(string(got.Config), "system_prompt") {
+		t.Fatalf("bundle must be pure composition, got config %s", got.Config)
+	}
+}
+
+func TestValidationRejectsBundleWithEmptyTools(t *testing.T) {
+	raw := map[string]interface{}{
+		"schema_version": "2",
+		"name":           "essentials/empty-bundle",
+		"version":        "0.1.0",
+		"kind":           "bundle",
+		"description":    "a bundle grouping nothing",
+		"config":         map[string]interface{}{"kind": "bundle", "tools": []interface{}{}},
+	}
+	b, _ := json.Marshal(raw)
+	var m alexsdk.Manifest
+	_ = json.Unmarshal(b, &m)
+	if err := alexsdk.AssertValid(&m); err == nil {
+		t.Fatal("expected validation error for bundle with empty tools (minItems:1)")
+	}
+}
+
 func TestToolTransportHTTPRetaxesToMcp(t *testing.T) {
 	tool := alexsdk.NewTool("acme/mcptool", "0.1.0").
 		Description("an mcp daemon").

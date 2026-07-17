@@ -203,6 +203,8 @@ macro_rules! common_builder_methods {
 #[derive(Default)]
 struct ToolFields {
     binary: String,
+    native_handler: String,
+    input_schema: Option<serde_json::Value>,
     default_port: Option<u16>,
     transport: Option<WireTransport>,
     args: Option<Vec<String>>,
@@ -267,6 +269,8 @@ impl Tool {
             _ => {
                 let cfg = AtoolConfig {
                     binary: f.binary.clone(),
+                    native_handler: f.native_handler.clone(),
+                    input_schema: f.input_schema.clone(),
                     default_port: f.default_port,
                     transport: f.transport,
                     args: f.args.clone(),
@@ -312,6 +316,26 @@ impl Tool {
     /// Contract/ABI major this tool exposes over its wire protocol (EE default 1).
     pub fn interface_major(mut self, n: u32) -> Self {
         self.fields.interface_major = Some(n);
+        self.rebuild();
+        self
+    }
+    /// Declare this as a **code-less** tool that binds to a native orchestrator
+    /// handler INSTEAD of shipping a binary (closed set, currently
+    /// `"emit_trigger"`). Clears any default-seeded binary. A code-less tool must
+    /// also declare its [`Self::input_schema`] — there is no daemon to advertise
+    /// it. (Only meaningful for an atool; the http/sse mcp taxonomy has no
+    /// native-handler concept.)
+    pub fn native_handler(mut self, name: impl Into<String>) -> Self {
+        self.fields.native_handler = name.into();
+        self.fields.binary = String::new();
+        self.rebuild();
+        self
+    }
+    /// Declare the tool's full input contract as an embedded JSON Schema.
+    /// Required for a code-less tool ([`Self::native_handler`]); optional static
+    /// fallback for a coded tool.
+    pub fn input_schema(mut self, schema: serde_json::Value) -> Self {
+        self.fields.input_schema = Some(schema);
         self.rebuild();
         self
     }

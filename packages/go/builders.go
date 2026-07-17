@@ -232,6 +232,25 @@ func (t *Tool) Args(a []string) *Tool { t.cfg.Args = a; return t.sync() }
 // InterfaceMajor sets config.interface_major (contract/ABI major; EE default 1).
 func (t *Tool) InterfaceMajor(n int) *Tool { v := n; t.cfg.InterfaceMajor = &v; return t.sync() }
 
+// NativeHandler declares this as a code-less tool that binds to a native
+// orchestrator handler INSTEAD of shipping a binary (closed set, currently
+// "emit_trigger"). It clears any default-seeded binary. A code-less tool must
+// also declare its InputSchema — there is no daemon to advertise it.
+func (t *Tool) NativeHandler(name string) *Tool {
+	t.cfg.NativeHandler = name
+	t.cfg.Binary = ""
+	return t.sync()
+}
+
+// InputSchema declares the tool's full input contract as an embedded JSON
+// Schema. Required for a code-less tool (see NativeHandler); optional static
+// fallback for a coded tool. schema is marshalled to JSON.
+func (t *Tool) InputSchema(schema any) *Tool {
+	raw, _ := json.Marshal(schema)
+	t.cfg.InputSchema = raw
+	return t.sync()
+}
+
 // Credential declares a secret credential this tool reads from an environment
 // variable. No secret value is ever placed in the package — the operator binds
 // the value into the deployment-shape secret backend at install time. The EE

@@ -147,6 +147,56 @@ def test_tool_transport_http_retaxes_to_mcp(tmp_path: Path) -> None:
     verify(out)
 
 
+def test_code_less_tool_round_trip(tmp_path: Path) -> None:
+    schema = {
+        "type": "object",
+        "required": ["objective"],
+        "properties": {
+            "objective": {"type": "string"},
+            "acceptance": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+    out = tmp_path / "delegate-0.1.0.atool"
+    manifest = (
+        Tool("acme/delegate", "0.1.0")
+        .description("code-less delegation tool")
+        .native_handler("emit_trigger")
+        .input_schema(schema)
+        .pack(out)
+    )
+    assert manifest["kind"] == "atool"
+    assert manifest["config"]["native_handler"] == "emit_trigger"
+    assert manifest["config"]["input_schema"]["required"] == ["objective"]
+    assert "binary" not in manifest["config"], "code-less tool omits binary"
+    verify(out)
+
+
+def test_validation_rejects_code_less_tool_without_input_schema() -> None:
+    manifest = {
+        "schema_version": "2",
+        "name": "acme/bad-native",
+        "version": "0.1.0",
+        "kind": "atool",
+        "description": "code-less tool missing its input_schema",
+        "config": {"kind": "atool", "native_handler": "emit_trigger"},
+    }
+    ok, _errors = validate(manifest)
+    assert not ok, "code-less tool must declare input_schema"
+
+
+def test_validation_rejects_atool_with_neither_binary_nor_handler() -> None:
+    manifest = {
+        "schema_version": "2",
+        "name": "acme/empty-tool",
+        "version": "0.1.0",
+        "kind": "atool",
+        "description": "atool with neither binary nor native_handler",
+        "config": {"kind": "atool"},
+    }
+    ok, _errors = validate(manifest)
+    assert not ok, "one of binary/native_handler is required"
+
+
 def test_tool_transport_grpc_stays_atool() -> None:
     manifest = (
         Tool("acme/g", "0.1.0")

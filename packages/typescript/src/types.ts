@@ -131,12 +131,28 @@ export interface McpConfig extends K8sHints, CredentialHints {
 }
 
 /**
- * `kind = atool` config — a binary daemon reached over the native gRPC
- * `ToolService`. Mirrors EE `AtoolConfig`; `transport` defaults to "grpc".
+ * `kind = atool` config — a native gRPC `ToolService` tool. Mirrors EE
+ * `AtoolConfig`; `transport` defaults to "grpc".
+ *
+ * A tool is EITHER **coded** (ships a `binary`) OR **code-less** (binds a
+ * `native_handler` and declares its `input_schema`). Exactly one of
+ * `{binary, native_handler}` must be set — the invariant is enforced by the
+ * product (and, best-effort, by the schema `oneOf`).
  */
 export interface AtoolConfig extends K8sHints, CredentialHints {
   kind: "atool";
-  binary: string;
+  /** Entry-point binary (coded tool). Omitted for a code-less tool. */
+  binary?: string;
+  /**
+   * Native orchestrator handler this **code-less** tool binds to instead of a
+   * binary. Closed set (currently `"emit_trigger"`), enforced by the product.
+   */
+  native_handler?: string;
+  /**
+   * Full JSON Schema for the tool's input contract. Required for a code-less
+   * tool (no daemon to advertise it); optional static fallback for a coded tool.
+   */
+  input_schema?: Record<string, unknown>;
   default_port?: number;
   transport?: "grpc" | "http" | "sse";
   args?: string[];

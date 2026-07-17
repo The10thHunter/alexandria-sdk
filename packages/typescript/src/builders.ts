@@ -114,6 +114,30 @@ export class Tool extends Base<McpConfig | AtoolConfig> {
   interfaceMajor(n: number): this { this.manifest.config.interface_major = n; return this; }
 
   /**
+   * Declare this as a **code-less** tool that binds to a native orchestrator
+   * handler INSTEAD of shipping a binary (closed set, currently
+   * `"emit_trigger"`). Drops the default-seeded empty `binary`. A code-less tool
+   * must also declare its {@link Tool.inputSchema} — there is no daemon to
+   * advertise it.
+   */
+  nativeHandler(name: string): this {
+    const cfg = this.manifest.config as AtoolConfig;
+    cfg.native_handler = name;
+    delete cfg.binary;
+    return this;
+  }
+
+  /**
+   * Declare the tool's full input contract as an embedded JSON Schema object.
+   * Required for a code-less tool ({@link Tool.nativeHandler}); optional static
+   * fallback for a coded tool.
+   */
+  inputSchema(schema: Record<string, unknown>): this {
+    (this.manifest.config as AtoolConfig).input_schema = schema;
+    return this;
+  }
+
+  /**
    * Declare a secret credential this tool reads from an environment variable.
    * No secret *value* is ever placed in the package — the operator binds the
    * value into the deployment-shape secret backend at install time. `secret`

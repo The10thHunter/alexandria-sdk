@@ -299,11 +299,28 @@ pub enum McpTransport {
     Sse,
 }
 
-/// `kind = atool` config — a binary daemon reached over the native gRPC
-/// `ToolService`. `transport` defaults to "grpc".
+/// `kind = atool` config — a native gRPC `ToolService` tool. `transport`
+/// defaults to "grpc".
+///
+/// A tool is EITHER **coded** (ships a `binary`) OR **code-less** (binds a
+/// `native_handler` and declares an `input_schema`). Exactly one of
+/// `{binary, native_handler}` must be set — enforced by the product
+/// (`ee/crates/alex-package`). Field style mirrors the EE struct: the unset
+/// side serialises to nothing (empty strings are skipped) so a code-less tool
+/// omits `binary` on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AtoolConfig {
+    /// Entry-point binary (coded tool). Empty/omitted for a code-less tool.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub binary: String,
+    /// Native orchestrator handler a **code-less** tool binds to instead of a
+    /// binary. Closed set (currently `"emit_trigger"`), enforced by the product.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub native_handler: String,
+    /// Full JSON Schema for the tool's input contract. Required for a code-less
+    /// tool; optional static fallback for a coded tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

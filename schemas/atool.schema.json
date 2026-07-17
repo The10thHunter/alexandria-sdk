@@ -258,11 +258,20 @@
     },
     "atoolConfig": {
       "type": "object",
-      "required": ["kind", "binary"],
+      "required": ["kind"],
       "additionalProperties": false,
+      "$comment": "A tool is EITHER coded (ships a `binary`) OR code-less (binds a `native_handler` + declares an `input_schema`). Exactly one of {binary, native_handler} must be set — enforced by the `oneOf` below and, authoritatively, by the product (ee/crates/alex-package). The closed native-handler set (currently [\"emit_trigger\"]) is enforced by the product, not repeated here. `binary`/`native_handler` carry no property-level minLength so that EE serde output (which serialises the unset side as an empty string) still validates; the non-empty requirement lives in the oneOf branches.",
       "properties": {
         "kind": { "const": "atool" },
-        "binary": { "type": "string", "minLength": 1 },
+        "binary": { "type": "string" },
+        "native_handler": {
+          "type": "string",
+          "description": "Code-less tool: name of the native orchestrator handler this tool binds to (closed set, e.g. \"emit_trigger\"). Set INSTEAD of `binary`."
+        },
+        "input_schema": {
+          "type": "object",
+          "description": "Full JSON Schema for the tool's input contract. Required for a code-less tool (no daemon to advertise it); optional static fallback for a coded tool."
+        },
         "default_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
         "transport": { "enum": ["grpc", "http", "sse"] },
         "args": { "type": "array", "items": { "type": "string" } },
@@ -284,7 +293,19 @@
           "description": "Author-time non-secret config env declarations (name -> default).",
           "items": { "$ref": "#/$defs/envDecl" }
         }
-      }
+      },
+      "oneOf": [
+        {
+          "title": "coded tool (ships a binary)",
+          "required": ["binary"],
+          "properties": { "binary": { "minLength": 1 } }
+        },
+        {
+          "title": "code-less tool (binds a native handler)",
+          "required": ["native_handler", "input_schema"],
+          "properties": { "native_handler": { "minLength": 1 } }
+        }
+      ]
     },
     "aagentConfig": {
       "type": "object",

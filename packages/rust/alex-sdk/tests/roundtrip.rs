@@ -137,6 +137,78 @@ fn credential_with_illegal_env_name_is_rejected() {
 }
 
 #[test]
+fn code_less_tool_round_trips() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("delegate-0.1.0.atool");
+
+    let schema = serde_json::json!({
+        "type": "object",
+        "required": ["objective"],
+        "properties": {
+            "objective": { "type": "string" },
+            "acceptance": { "type": "array", "items": { "type": "string" } }
+        }
+    });
+
+    let manifest = Tool::new("acme/delegate", "0.1.0")
+        .description("code-less delegation tool")
+        .native_handler("emit_trigger")
+        .input_schema(schema)
+        .pack(&out)
+        .expect("pack");
+
+    assert_eq!(manifest.kind, alex_sdk::manifest::Kind::Atool);
+    if let PackageConfig::Atool(cfg) = &manifest.config {
+        assert_eq!(cfg.native_handler, "emit_trigger");
+        assert!(cfg.binary.is_empty(), "code-less tool omits binary");
+        assert!(cfg.input_schema.is_some(), "input_schema present");
+    } else {
+        panic!("expected AtoolConfig");
+    }
+
+    // Serialised form must omit `binary` entirely (schema minLength would reject "").
+    let serialised = serde_json::to_string(&manifest).expect("serialise");
+    assert!(
+        !serialised.contains("\"binary\""),
+        "code-less tool must not serialise a binary field: {serialised}"
+    );
+
+    verify(&out).expect("verify");
+}
+
+#[test]
+fn code_less_tool_without_input_schema_is_rejected() {
+    let manifest = serde_json::json!({
+        "schema_version": "2",
+        "name": "acme/bad-native",
+        "version": "0.1.0",
+        "kind": "atool",
+        "description": "code-less tool missing its input_schema",
+        "config": { "kind": "atool", "native_handler": "emit_trigger" }
+    });
+    assert!(
+        validate(&manifest).is_err(),
+        "code-less tool must declare input_schema"
+    );
+}
+
+#[test]
+fn atool_with_neither_binary_nor_handler_is_rejected() {
+    let manifest = serde_json::json!({
+        "schema_version": "2",
+        "name": "acme/empty-tool",
+        "version": "0.1.0",
+        "kind": "atool",
+        "description": "atool with neither binary nor native_handler",
+        "config": { "kind": "atool" }
+    });
+    assert!(
+        validate(&manifest).is_err(),
+        "one of binary/native_handler is required"
+    );
+}
+
+#[test]
 fn tool_transport_http_retaxes_to_mcp() {
     let manifest = Tool::new("acme/mcptool", "0.1.0")
         .description("mcp daemon")

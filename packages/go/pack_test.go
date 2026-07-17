@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	alexsdk "github.com/The10thHunter/alexandria-sdk/packages/go"
@@ -163,6 +164,87 @@ func TestCredentialWithIllegalEnvNameIsRejected(t *testing.T) {
 		Build()
 	if err == nil {
 		t.Fatal("expected build to reject illegal credential env var name")
+	}
+}
+
+func TestCodeLessToolRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "delegate-0.1.0.atool")
+
+	schema := json.RawMessage(`{
+		"type": "object",
+		"required": ["objective"],
+		"properties": {
+			"objective": {"type": "string"},
+			"acceptance": {"type": "array", "items": {"type": "string"}}
+		}
+	}`)
+
+	tool := alexsdk.NewTool("acme/delegate", "0.1.0").
+		Description("code-less delegation tool").
+		NativeHandler("emit_trigger").
+		InputSchema(schema)
+
+	if _, err := tool.Pack(out); err != nil {
+		t.Fatalf("Pack: %v", err)
+	}
+
+	got, err := alexsdk.Verify(out)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if got.Kind != alexsdk.KindAtool {
+		t.Fatalf("expected kind=atool, got %q", got.Kind)
+	}
+	if strings.Contains(string(got.Config), "\"binary\"") {
+		t.Fatalf("code-less tool must omit binary, got config %s", got.Config)
+	}
+	ac, err := got.AtoolConfig()
+	if err != nil {
+		t.Fatalf("AtoolConfig: %v", err)
+	}
+	if ac.NativeHandler != "emit_trigger" {
+		t.Fatalf("expected native_handler=emit_trigger, got %q", ac.NativeHandler)
+	}
+	if len(ac.InputSchema) == 0 {
+		t.Fatal("expected input_schema to be present")
+	}
+	if ac.Binary != "" {
+		t.Fatalf("expected empty binary, got %q", ac.Binary)
+	}
+}
+
+func TestValidationRejectsCodeLessToolWithoutInputSchema(t *testing.T) {
+	raw := map[string]interface{}{
+		"schema_version": "2",
+		"name":           "acme/bad-native",
+		"version":        "0.1.0",
+		"kind":           "atool",
+		"description":    "code-less tool missing its input_schema",
+		"config":         map[string]interface{}{"kind": "atool", "native_handler": "emit_trigger"},
+	}
+	b, _ := json.Marshal(raw)
+	var m alexsdk.Manifest
+	_ = json.Unmarshal(b, &m)
+	if err := alexsdk.AssertValid(&m); err == nil {
+		t.Fatal("expected validation error for code-less tool without input_schema")
+	}
+}
+
+func TestValidationRejectsAtoolWithNeitherBinaryNorHandler(t *testing.T) {
+	raw := map[string]interface{}{
+		"schema_version": "2",
+		"name":           "acme/empty-tool",
+		"version":        "0.1.0",
+		"kind":           "atool",
+		"description":    "atool with neither binary nor native_handler",
+		"config":         map[string]interface{}{"kind": "atool"},
+	}
+	b, _ := json.Marshal(raw)
+	var m alexsdk.Manifest
+	_ = json.Unmarshal(b, &m)
+	if err := alexsdk.AssertValid(&m); err == nil {
+		t.Fatal("expected validation error for atool with neither binary nor native_handler")
 	}
 }
 

@@ -180,6 +180,26 @@ class Tool(_Base):
         self._manifest["config"]["interface_major"] = n
         return self
 
+    def native_handler(self, name: str) -> "Tool":
+        """Declare a code-less tool that binds to a native orchestrator handler.
+
+        Set INSTEAD of a binary (closed set, currently ``"emit_trigger"``). Drops
+        the default-seeded empty ``binary``. A code-less tool must also declare
+        its :meth:`input_schema` — there is no daemon to advertise it.
+        """
+        self._manifest["config"]["native_handler"] = name
+        self._manifest["config"].pop("binary", None)
+        return self
+
+    def input_schema(self, schema: dict[str, Any]) -> "Tool":
+        """Declare the tool's full input contract as an embedded JSON Schema.
+
+        Required for a code-less tool (see :meth:`native_handler`); optional
+        static fallback for a coded tool.
+        """
+        self._manifest["config"]["input_schema"] = dict(schema)
+        return self
+
     def credential(
         self,
         env: str,

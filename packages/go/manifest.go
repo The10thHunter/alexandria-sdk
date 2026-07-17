@@ -125,9 +125,17 @@ type McpConfig struct {
 }
 
 // AtoolConfig is the typed `config` block for kind=atool (native gRPC).
+//
+// A tool is EITHER coded (ships a Binary) OR code-less (binds a NativeHandler
+// and declares an InputSchema). Exactly one of {Binary, NativeHandler} must be
+// set — enforced by the product (ee/crates/alex-package) and, best-effort, the
+// schema. NativeHandler must name a handler in the product's closed set
+// (currently "emit_trigger").
 type AtoolConfig struct {
 	Kind                  string           `json:"kind"`
-	Binary                string           `json:"binary"`
+	Binary                string           `json:"binary,omitempty"`
+	NativeHandler         string           `json:"native_handler,omitempty"`
+	InputSchema           json.RawMessage  `json:"input_schema,omitempty"`
 	DefaultPort           *int             `json:"default_port,omitempty"`
 	Transport             string           `json:"transport,omitempty"`
 	Args                  []string         `json:"args,omitempty"`

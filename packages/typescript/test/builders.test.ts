@@ -123,6 +123,61 @@ test("validation rejects a credential env var with an illegal name", () => {
   assert.equal(result.ok, false, "illegal env var name must be rejected");
 });
 
+test("code-less Tool (native_handler + input_schema, no binary) round-trips", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sdk-"));
+  const out = join(dir, "delegate-0.1.0.atool");
+
+  const schema = {
+    type: "object",
+    required: ["objective"],
+    properties: {
+      objective: { type: "string" },
+      acceptance: { type: "array", items: { type: "string" } },
+    },
+  };
+
+  await new Tool("acme/delegate", "0.1.0")
+    .description("code-less delegation tool")
+    .nativeHandler("emit_trigger")
+    .inputSchema(schema)
+    .pack(out);
+
+  const m = await verify(out);
+  assert.equal(m.kind, "atool");
+  assert.equal(m.schema_version, "2");
+  if (m.config.kind === "atool") {
+    assert.equal(m.config.native_handler, "emit_trigger");
+    assert.ok(m.config.input_schema, "input_schema present");
+    assert.ok(!("binary" in m.config), "code-less tool omits binary");
+  }
+});
+
+test("validation rejects a code-less tool without input_schema", () => {
+  const manifest = {
+    schema_version: "2",
+    name: "acme/bad-native",
+    version: "0.1.0",
+    kind: "atool",
+    description: "code-less tool missing its input_schema",
+    config: { kind: "atool", native_handler: "emit_trigger" },
+  };
+  const result = validate(manifest);
+  assert.equal(result.ok, false, "code-less tool must declare input_schema");
+});
+
+test("validation rejects an atool with neither binary nor native_handler", () => {
+  const manifest = {
+    schema_version: "2",
+    name: "acme/empty-tool",
+    version: "0.1.0",
+    kind: "atool",
+    description: "atool with neither binary nor native_handler",
+    config: { kind: "atool" },
+  };
+  const result = validate(manifest);
+  assert.equal(result.ok, false, "one of binary/native_handler is required");
+});
+
 test("Skill emits kind=aagent (prompt-only, no tags)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sdk-"));
   const out = join(dir, "skill-0.1.0.aagent");
